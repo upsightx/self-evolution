@@ -1,188 +1,69 @@
 ---
 name: self-evolution
 description: |
-  Self-Evolution Engine for AI Agents. Manages structured memory, intelligent scheduling,
-  quality control (SAGE Critic), self-audit, and task extraction.
+  Structured memory database for AI agents. Remember WHY, not just WHAT.
+  Decisions with rejected alternatives. Observations with classification.
+  Dual-path search for CJK/English. Zero dependencies.
 
-  **Use this Skill when**:
-  (1) Heartbeat triggers — decide what to check and execute
-  (2) Need to compress/organize/search memory
-  (3) Weekly self-audit
-  (4) Extract tasks from conversations
-  (5) Complex tasks need Critic review
-  (6) Session ends — record structured memory
+  **Use when**: recording decisions, lessons, discoveries; searching past experience; session-end memory extraction.
 ---
 
-# Self Evolution Engine
+# Self-Evolution: Structured Memory
 
-One skill to manage all self-maintenance and evolution capabilities.
+One tool: `memory_db.py`. SQLite + FTS5. Zero dependencies.
 
----
+## What it does
 
-## 1. Structured Memory System
+Records three things:
+1. **Observations** — what happened (typed: discovery/bugfix/feature/refactor/decision/change)
+2. **Decisions** — what you chose, what you rejected, and why
+3. **Session summaries** — what was done, what was learned
 
-### Database
-`memory/structured/memory_db.py` — SQLite + FTS5, zero dependencies.
+Searches with dual-path (FTS5 + LIKE) so both English and Chinese work.
 
-### Three Core Tables
-
-| Table | Purpose | Key Fields |
-|-------|---------|-----------|
-| observations | Discoveries, lessons, changes | type, title, narrative, facts, concepts |
-| decisions | Key decisions (Lore format) | decision, rejected_alternatives, rationale |
-| session_summaries | Session summaries | request, learned, completed, next_steps |
-
-### Progressive Disclosure Retrieval
+## Usage
 
 ```bash
-# L1 Index (~50 tokens/result): id + title + type + date
-python3 memory_db.py search "keyword"
+cd /root/.openclaw/workspace/memory/structured
 
-# L2 Context (~200 tokens/result): + narrative + facts
-python3 memory_db.py l2 1 2 3
+# Search
+python3 memory_db.py search "部署"
+python3 memory_db.py decisions "SQLite"
 
-# L3 Full (~500 tokens/result): all fields
-python3 memory_db.py l3 1
-
-# Search decisions
-python3 memory_db.py decisions "keyword"
+# Write
+python3 memory_db.py add discovery "标题" "描述"
+python3 memory_db.py decision "标题" "决策" "拒绝方案" "原因"
 
 # Stats
 python3 memory_db.py stats
 ```
 
-### Retrieval Strategy
-1. First: `memory_db.py search` for precise retrieval
-2. Fallback: semantic search (memory_search) for fuzzy matching
-
----
-
-## 2. Intelligent Heartbeat Scheduling
-
-### Priority Scoring (1-5)
-
-| Check Item | Base | Bonus Conditions |
-|-----------|------|-----------------|
-| Calendar | 2 | Meeting mentioned +2; >4h since last +1 |
-| Messages | 2 | Unread mentions +2 |
-| Version check | 1 | >24h since last +2 |
-| Services | 1 | Last check failed +3 |
-| Config sync | 1 | Night hours +3; not synced today +2 |
-| External learning | 1 | >24h since last +2 |
-| Memory compress | 1 | >7 days since last +2; >50 files +2 |
-| Self-audit | 0 | Sunday +5; >7 days since last +3 |
-
-Execute top 1-3 items by score.
-
-### Notification Rules
-- Notify: meeting <2h, important unread, service down, new version, task due today
-- Silent: night (23:00-08:00), all normal, user busy
-
----
-
-## 3. Memory Compression
-
-### Auto-Extract (after important sessions)
-
-Record to database:
-1. **Decisions** → `add_decision(title, decision, rejected_alternatives, rationale)`
-2. **Discoveries** → `add_observation('discovery', title, narrative, facts, concepts)`
-3. **Lessons** → `add_observation('bugfix', title, narrative, facts, concepts)`
-4. **Summary** → `add_session_summary(request, learned, completed, next_steps)`
-
-### Periodic Compression (weekly)
-
-For logs older than 7 days:
-1. Sub-agent extracts structured info to database
-2. Key info not in MEMORY.md → add to MEMORY.md
-3. Older than 30 days → archive to `memory/archive/YYYY-MM/`
-
-### Compression Agent Template
-```
-Extract structured information from this log as JSON:
-
-{file_content}
-
-Output format:
-{
-  "observations": [{"type": "...", "title": "...", "narrative": "...", "facts": [...], "concepts": [...]}],
-  "decisions": [{"title": "...", "decision": "...", "rejected_alternatives": [...], "rationale": "..."}],
-  "summary": "one-line summary"
-}
-
-Rules: Only extract long-term valuable info. Ignore debug logs. title ≤ 20 chars, narrative ≤ 100 chars.
+Python:
+```python
+from memory_db import *
+add_observation('bugfix', '标题', narrative='描述', facts=['事实'], concepts=['标签'])
+add_decision('标题', '决策', rejected_alternatives=['方案B'], rationale='原因')
+results = search('关键词')
 ```
 
----
+## When to record
 
-## 4. Self-Audit (Weekly)
+**Record decisions** when you choose between alternatives — especially when the choice isn't obvious.
 
-### Flow
-1. **Collect**: Read last 7 days of memory/*.md
-2. **Analyze**: Task completion, sub-agent success rate, lessons, repeated patterns
-3. **Output**: Write to `memory/self-audit-YYYY-MM-DD.md`
-4. **Improve**: Update MEMORY.md, create new Skills if needed
+**Record observations** when:
+- Something fails unexpectedly (bugfix)
+- You discover a non-obvious fact (discovery)
+- You build something worth remembering (feature)
 
----
+**Record session summaries** at the end of important sessions.
 
-## 5. Task Extraction from Conversations
+Don't record routine operations. If it's not worth searching for later, don't write it.
 
-| Signal | Example | Action |
-|--------|---------|--------|
-| Strong | "Create a task for...", "Do X by tomorrow" | Create task directly |
-| Medium | "This needs fixing", "Let's do X" | Confirm then create |
-| Weak | "Maybe someday...", "Could consider..." | Log only |
+## Relationship with existing memory
 
----
+- `MEMORY.md` — curated long-term memory (human-readable overview)
+- `memory/*.md` — daily logs (raw)
+- `memory/structured/memory.db` — searchable structured records (this tool)
+- `memory_search` — semantic search across .md files
 
-## 6. Quality Control (SAGE Critic)
-
-### When to Use
-- After code development tasks
-- After important documents/reports
-- When sub-agent output quality is uncertain
-
-### Critic Agent Template
-```
-You are a quality review Agent (Critic).
-
-## Original Task
-{original_task}
-
-## Output Location
-{output_path}
-
-## Evaluation Dimensions
-1. Completeness: All requirements met?
-2. Correctness: Logic correct? Bugs?
-3. Safety: Side effects?
-4. Efficiency: Redundancy?
-5. Maintainability: Clear and readable?
-
-## Output
-{"score": 1-10, "passed": true/false, "issues": [...], "suggestions": [...]}
-```
-
-### Two-Phase Review
-1. Phase 1 (Main Agent): Spec compliance — requirements met, constraints respected
-2. Phase 2 (Critic Agent): Quality — safety, efficiency, edge cases
-
----
-
-## 7. Sub-Agent Templates
-
-### Principles
-- Critical info first, marked with ⚠️
-- Provide exact file paths
-- Explicitly list "do NOT do" items
-- One agent, one task
-- Task granularity: 2-5 minutes
-
-### Template Index
-
-| Template | Use Case |
-|----------|----------|
-| Code Development | Constraints → Task → File paths → Verification |
-| Info Search | Task → Output requirements (≥20 items) → Search scope → Quality rules |
-| Memory Compression | Log content → JSON extraction → Rules |
-| Critic Review | Original task → Output → Evaluation → Verdict |
+Use this tool for precise retrieval ("why did we choose X?"). Use memory_search for fuzzy recall ("something about deployment last week").
