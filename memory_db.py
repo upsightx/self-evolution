@@ -180,27 +180,54 @@ def search_l1(query=None, type=None, limit=20):
     """
     L1 Index Retrieval: returns id + title + type + timestamp
     Cheapest layer (~50 tokens per result).
+    
+    Uses dual-path search: FTS5 for English tokens + LIKE for CJK/mixed content.
     """
     db = get_db()
     if query:
-        rows = db.execute("""
-            SELECT o.id, o.type, o.title, o.timestamp
-            FROM observations_fts f
-            JOIN observations o ON f.rowid = o.id
-            WHERE observations_fts MATCH ?
-            ORDER BY rank
-            LIMIT ?
-        """, (query, limit)).fetchall()
+        seen = set()
+        results = []
+        
+        # Path 1: FTS5 (good for English words separated by spaces/punctuation)
+        try:
+            fts_rows = db.execute("""
+                SELECT o.id, o.type, o.title, o.timestamp
+                FROM observations_fts f
+                JOIN observations o ON f.rowid = o.id
+                WHERE observations_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+            """, (query, limit)).fetchall()
+            for r in fts_rows:
+                if r['id'] not in seen:
+                    seen.add(r['id'])
+                    results.append(dict(r))
+        except Exception:
+            pass  # FTS5 match syntax error — fall through to LIKE
+        
+        # Path 2: LIKE (catches CJK, mixed content, partial matches)
+        like_pattern = f"%{query}%"
+        like_rows = db.execute("""
+            SELECT id, type, title, timestamp FROM observations
+            WHERE title LIKE ? OR narrative LIKE ? OR facts LIKE ? OR concepts LIKE ?
+            ORDER BY timestamp DESC LIMIT ?
+        """, (like_pattern, like_pattern, like_pattern, like_pattern, limit)).fetchall()
+        for r in like_rows:
+            if r['id'] not in seen:
+                seen.add(r['id'])
+                results.append(dict(r))
+        
+        rows = results[:limit]
     else:
         where = "WHERE type = ?" if type else ""
         params = [type, limit] if type else [limit]
-        rows = db.execute(f"""
+        rows = [dict(r) for r in db.execute(f"""
             SELECT id, type, title, timestamp FROM observations
             {where}
             ORDER BY timestamp DESC LIMIT ?
-        """, params).fetchall()
+        """, params).fetchall()]
     db.close()
-    return [dict(r) for r in rows]
+    return rows
 
 
 def search_l2(ids):
@@ -231,24 +258,50 @@ def search_l3(id):
 
 
 def search_decisions(query=None, limit=20):
-    """Search decision records."""
+    """Search decision records. Dual-path: FTS5 + LIKE."""
     db = get_db()
     if query:
-        rows = db.execute("""
-            SELECT d.id, d.title, d.decision, d.rationale, 
-                   d.rejected_alternatives, d.timestamp
-            FROM decisions_fts f
-            JOIN decisions d ON f.rowid = d.id
-            WHERE decisions_fts MATCH ?
-            ORDER BY rank LIMIT ?
-        """, (query, limit)).fetchall()
+        seen = set()
+        results = []
+        
+        # Path 1: FTS5
+        try:
+            fts_rows = db.execute("""
+                SELECT d.id, d.title, d.decision, d.rationale, 
+                       d.rejected_alternatives, d.timestamp
+                FROM decisions_fts f
+                JOIN decisions d ON f.rowid = d.id
+                WHERE decisions_fts MATCH ?
+                ORDER BY rank LIMIT ?
+            """, (query, limit)).fetchall()
+            for r in fts_rows:
+                if r['id'] not in seen:
+                    seen.add(r['id'])
+                    results.append(dict(r))
+        except Exception:
+            pass
+        
+        # Path 2: LIKE
+        like_pattern = f"%{query}%"
+        like_rows = db.execute("""
+            SELECT id, title, decision, rationale, rejected_alternatives, timestamp
+            FROM decisions
+            WHERE title LIKE ? OR decision LIKE ? OR rationale LIKE ? OR rejected_alternatives LIKE ?
+            ORDER BY timestamp DESC LIMIT ?
+        """, (like_pattern, like_pattern, like_pattern, like_pattern, limit)).fetchall()
+        for r in like_rows:
+            if r['id'] not in seen:
+                seen.add(r['id'])
+                results.append(dict(r))
+        
+        rows = results[:limit]
     else:
-        rows = db.execute(
+        rows = [dict(r) for r in db.execute(
             "SELECT * FROM decisions ORDER BY timestamp DESC LIMIT ?",
             (limit,)
-        ).fetchall()
+        ).fetchall()]
     db.close()
-    return [dict(r) for r in rows]
+    return rows
 
 
 def search_summaries(query=None, limit=10):
