@@ -119,3 +119,7 @@ cd tests && python3 -m pytest -v
 ## License
 
 MIT
+
+## 致谢
+
+- [FreeTodo](https://github.com/upsightx/FreeTodo) — 待办提取、RAG 流程、上下文构建等设计模式源自该项目的精华提炼
