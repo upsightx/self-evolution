@@ -15,7 +15,7 @@ import sqlite3
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 DB_PATH = Path(os.environ.get("SELF_EVOLUTION_DB", Path(__file__).parent / "memory.db"))
@@ -41,6 +41,9 @@ def init_db():
             narrative TEXT,
             facts TEXT,
             concepts TEXT,
+            source TEXT,
+            verified INTEGER DEFAULT 0,
+            tags TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         );
 
@@ -62,6 +65,7 @@ def init_db():
             learned TEXT,
             completed TEXT,
             next_steps TEXT,
+            importance_score REAL DEFAULT 0.5,
             created_at TEXT DEFAULT (datetime('now'))
         );
 
@@ -94,6 +98,20 @@ def init_db():
             INSERT INTO decisions_fts(decisions_fts, rowid, title, decision, rejected_alternatives, rationale)
             VALUES ('delete', old.id, old.title, old.decision, old.rejected_alternatives, old.rationale);
         END;
+
+        CREATE TRIGGER IF NOT EXISTS obs_fts_update AFTER UPDATE ON observations BEGIN
+            INSERT INTO observations_fts(observations_fts, rowid, title, narrative, facts, concepts)
+            VALUES ('delete', old.id, old.title, old.narrative, old.facts, old.concepts);
+            INSERT INTO observations_fts(rowid, title, narrative, facts, concepts)
+            VALUES (new.id, new.title, new.narrative, new.facts, new.concepts);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS dec_fts_update AFTER UPDATE ON decisions BEGIN
+            INSERT INTO decisions_fts(decisions_fts, rowid, title, decision, rejected_alternatives, rationale)
+            VALUES ('delete', old.id, old.title, old.decision, old.rejected_alternatives, old.rationale);
+            INSERT INTO decisions_fts(rowid, title, decision, rejected_alternatives, rationale)
+            VALUES (new.id, new.title, new.decision, new.rejected_alternatives, new.rationale);
+        END;
     """)
     db.commit()
     db.close()
@@ -102,14 +120,21 @@ def init_db():
 
 # ============ Write ============
 
-def add_observation(type, title, narrative=None, facts=None, concepts=None, session_id=None):
-    """Add an observation. Types: decision, bugfix, feature, refactor, discovery, change"""
+def add_observation(type, title, narrative=None, facts=None, concepts=None, session_id=None, source=None, verified=False, tags=None):
+    """Add an observation. Types: decision, bugfix, feature, refactor, discovery, change
+    
+    Args:
+        source: 信息来源 (如 'chat', 'file', 'web', 'task' 等)
+        verified: 是否已验证 (bool)
+        tags: 标签列表 (list)
+    """
     db = get_db()
     db.execute(
-        "INSERT INTO observations (session_id, timestamp, type, title, narrative, facts, concepts) VALUES (?,?,?,?,?,?,?)",
+        "INSERT INTO observations (session_id, timestamp, type, title, narrative, facts, concepts, source, verified, tags) VALUES (?,?,?,?,?,?,?,?,?,?)",
         (session_id, datetime.now().isoformat(), type, title, narrative,
          json.dumps(facts, ensure_ascii=False) if facts else None,
-         json.dumps(concepts, ensure_ascii=False) if concepts else None)
+         json.dumps(concepts, ensure_ascii=False) if concepts else None,
+         source, 1 if verified else 0, json.dumps(tags, ensure_ascii=False) if tags else None)
     )
     db.commit()
     rid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -132,12 +157,16 @@ def add_decision(title, decision, rejected_alternatives=None, rationale=None):
     return rid
 
 
-def add_session_summary(request, learned=None, completed=None, next_steps=None, session_id=None):
-    """Add a session summary for continuity across sessions."""
+def add_session_summary(request, learned=None, completed=None, next_steps=None, session_id=None, importance_score=0.5):
+    """Add a session summary for continuity across sessions.
+    
+    Args:
+        importance_score: 重要性评分 (0.0-1.0)
+    """
     db = get_db()
     db.execute(
-        "INSERT INTO session_summaries (session_id, timestamp, request, learned, completed, next_steps) VALUES (?,?,?,?,?,?)",
-        (session_id, datetime.now().isoformat(), request, learned, completed, next_steps)
+        "INSERT INTO session_summaries (session_id, timestamp, request, learned, completed, next_steps, importance_score) VALUES (?,?,?,?,?,?,?)",
+        (session_id, datetime.now().isoformat(), request, learned, completed, next_steps, importance_score)
     )
     db.commit()
     db.close()
@@ -238,6 +267,73 @@ def stats():
     }
     db.close()
     return r
+
+
+def count_by_type(table="observations"):
+    """统计指定表的记录数量（按类型分组）。
+    
+    Args:
+        table: 表名，可选 'observations', 'decisions', 'session_summaries'
+    
+    Returns:
+        dict: {type: count}
+    """
+    valid_tables = {"observations", "decisions", "session_summaries"}
+    if table not in valid_tables:
+        raise ValueError(f"Invalid table: {table}. Valid: {valid_tables}")
+    
+    db = get_db()
+    if table == "observations":
+        results = {r["type"]: r["cnt"] for r in db.execute(
+            "SELECT type, COUNT(*) as cnt FROM observations GROUP BY type ORDER BY cnt DESC"
+        ).fetchall()}
+    elif table == "decisions":
+        # decisions 表没有 type 字段，返回总数
+        results = {"total": db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]}
+    else:
+        # session_summaries 没有 type，返回总数
+        results = {"total": db.execute("SELECT COUNT(*) FROM session_summaries").fetchone()[0]}
+    db.close()
+    return results
+
+
+def recent_by_days(days=7, table="observations"):
+    """获取最近 N 天的记录。
+    
+    Args:
+        days: 天数
+        table: 表名，可选 'observations', 'decisions', 'session_summaries'
+    
+    Returns:
+        list: 记录列表，每条记录包含 id, timestamp 等字段
+    """
+    valid_tables = {"observations", "decisions", "session_summaries"}
+    if table not in valid_tables:
+        raise ValueError(f"Invalid table: {table}. Valid: {valid_tables}")
+    
+    db = get_db()
+    cutoff = datetime.now() - timedelta(days=days)
+    
+    if table == "observations":
+        results = [dict(r) for r in db.execute("""
+            SELECT id, session_id, timestamp, type, title, narrative, source, verified, tags
+            FROM observations 
+            WHERE timestamp >= ? ORDER BY timestamp DESC
+        """, (cutoff.isoformat(),)).fetchall()]
+    elif table == "decisions":
+        results = [dict(r) for r in db.execute("""
+            SELECT id, timestamp, title, decision, rejected_alternatives, rationale
+            FROM decisions 
+            WHERE timestamp >= ? ORDER BY timestamp DESC
+        """, (cutoff.isoformat(),)).fetchall()]
+    else:
+        results = [dict(r) for r in db.execute("""
+            SELECT id, session_id, timestamp, request, learned, completed, next_steps, importance_score
+            FROM session_summaries 
+            WHERE timestamp >= ? ORDER BY timestamp DESC
+        """, (cutoff.isoformat(),)).fetchall()]
+    db.close()
+    return results
 
 
 def import_json(data):

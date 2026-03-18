@@ -1,128 +1,60 @@
-# 🧬 Self-Evolution
+# 🧬 Self-Evolution Engine for AI Agents
 
-Structured memory database for AI agents. Remember WHY, not just WHAT.
+Structured memory, intelligent scheduling, quality control, and self-audit tools for AI agents.
 
-## The Problem
+## Core: memory_db.py
 
-AI agents forget everything between sessions. When they do keep logs, it's flat text — you can't search "why did we reject option B?" or "what deployment bugs have we hit before?"
-
-## The Solution
-
-One Python file. SQLite + FTS5. Zero dependencies.
+SQLite + FTS5 structured memory database. Zero dependencies. Remember **WHY**, not just WHAT.
 
 ```bash
-python3 memory_db.py init
-```
-
-### Record decisions (the real value)
-
-```bash
-python3 memory_db.py decision \
-  "Chose SQLite over PostgreSQL" \
-  "Use SQLite + FTS5" \
-  "PostgreSQL (too heavy)" \
-  "Zero dependencies, system built-in"
-```
-
-This records not just what you chose, but what you rejected and why. So future-you doesn't waste time re-evaluating the same options.
-
-### Record observations
-
-```bash
-# A bug you hit
-python3 memory_db.py add bugfix "torch CUDA too heavy" "2GB+ dependency broke deployment"
-
-# Something you discovered
-python3 memory_db.py add discovery "MiniMax more stable than GLM5" "GLM5 returns 403 ~5% of the time"
-```
-
-Types: `decision`, `bugfix`, `feature`, `refactor`, `discovery`, `change`
-
-### Search
-
-```bash
-# Search observations (works with English, Chinese, and mixed content)
+# Search (dual-path: FTS5 + LIKE, works for both English and Chinese)
 python3 memory_db.py search "deployment"
-python3 memory_db.py search "部署"
+python3 memory_db.py decisions "model selection"
 
-# Search decisions
-python3 memory_db.py decisions "SQLite"
-
-# Full details
-python3 memory_db.py get 1
+# Write
+python3 memory_db.py add discovery "Title" "Description"
+python3 memory_db.py decision "Title" "Decision" "Rejected alternative" "Rationale"
 
 # Stats
 python3 memory_db.py stats
 ```
 
-### Python API
+Three tables:
+- **observations** — what happened (typed: discovery/bugfix/feature/refactor/decision/change)
+- **decisions** — what you chose, what you rejected, and why
+- **session_summaries** — what was done, what was learned
 
-```python
-from memory_db import *
+## Tools
 
-init_db()
+| File | Purpose |
+|------|---------|
+| `memory_db.py` | Core structured memory database |
+| `import_legacy.py` | Import existing markdown memory files into the database |
+| `record_agent_stat.py` | Track sub-agent success rates by model and task type |
+| `self-evolution-checklist.md` | Self-evolution audit checklist |
 
-add_decision("Title", "What was decided",
-    rejected_alternatives=["Option B", "Option C"],
-    rationale="Why this option won")
+## Agent Templates
 
-add_observation("bugfix", "Title", 
-    narrative="What happened",
-    facts=["Concrete fact"],
-    concepts=["tag1", "tag2"])
+`agent-templates/` contains reusable instruction templates for sub-agents:
+- SAGE 4-role mechanism (Solver/Critic/Planner/Challenger)
+- Critic review template with 3-dimension scoring
+- 6 task type templates (coding, research, skill creation, etc.)
+- Decision recording format (with rejected_alternatives)
 
-add_session_summary("What was requested",
-    learned="What was learned",
-    completed="What was done")
+## Skills
 
-results = search("keyword")
-decisions = search_decisions("keyword")
-```
+`skills/` contains OpenClaw-compatible agent skills:
 
-### Import from JSON
+- **external-learning** — Automated external learning system. Dispatches parallel sub-agents to collect info from GitHub Trending, Hacker News, arXiv, financing news, Product Hunt. Keyword-based filtering, value scoring, dedup.
+- **deploy-helper** — Safe deployment SOP. Docker-first testing, common pitfall cheat sheet, production migration checklist.
 
-```bash
-python3 memory_db.py import extracted.json
-```
+## Design Principles
 
-Format:
-```json
-{
-  "observations": [{"type": "discovery", "title": "...", "narrative": "..."}],
-  "decisions": [{"title": "...", "decision": "...", "rejected_alternatives": ["..."], "rationale": "..."}],
-  "summary": "One-line summary"
-}
-```
-
-## How search works
-
-FTS5 can't tokenize Chinese or mixed CJK-English text. So we use dual-path search:
-
-1. **FTS5** — handles English words separated by spaces/punctuation
-2. **LIKE** — catches Chinese, mixed content, partial matches
-
-Results are merged and deduped. You don't need to think about it.
-
-## Design principles
-
-- **Zero dependencies** — Python 3.8+ and SQLite (system built-in)
-- **Record "why"** — decisions with rejected alternatives matter more than raw logs
-- **Don't over-record** — if it's not worth searching for later, don't write it
-- **Search must work** — dual-path ensures CJK and English both work
-
-## As an OpenClaw Skill
-
-```bash
-cp -r self-evolution ~/.openclaw/skills/
-python3 memory_db.py init
-```
-
-See `SKILL.md` for integration details.
-
-## Inspired by
-
-- [claude-mem](https://github.com/thedotmack/claude-mem) — structured memory design
-- [Lore](https://arxiv.org/abs/2603.15566) — decision recording with rejected alternatives
+1. **Remember WHY** — Every decision records rejected alternatives and rationale
+2. **Keyword-based filtering** — No vague metrics like "relevance > 0.7", use concrete keyword matching
+3. **Dual-path search** — FTS5 for English tokens + LIKE fallback for CJK content
+4. **Model selection by complexity** — Complex tasks (refactor/audit) → strong model; simple tasks (info gathering) → cheap model
+5. **One agent, one job** — Never let two agents modify the same file
 
 ## License
 

@@ -24,7 +24,7 @@ Searches with dual-path (FTS5 + LIKE) so both English and Chinese work.
 ## Usage
 
 ```bash
-cd /root/.openclaw/workspace/memory/structured
+cd <workspace>/memory/structured
 
 # Search
 python3 memory_db.py search "部署"
