@@ -48,7 +48,7 @@
 每次做重要决策时，用以下格式记录到结构化数据库：
 
 ```bash
-cd <workspace>/memory/structured
+cd modules/
 python3 memory_db.py decision \
   "决策标题" \
   "选择了什么方案" \
@@ -253,7 +253,7 @@ add_session_summary('用户请求',
 ### 会话结束时
 每次重要会话结束前，记录到结构化数据库：
 ```bash
-cd <workspace>/memory/structured
+cd modules/
 python3 memory_db.py add discovery "标题" "描述"
 python3 memory_db.py decision "标题" "决策" "拒绝方案" "原因"
 ```

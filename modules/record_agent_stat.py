@@ -3,7 +3,7 @@
 import json, sys, os
 from datetime import datetime
 
-STATS_PATH = os.environ.get("AGENT_STATS_PATH", os.path.join(os.path.dirname(__file__), "agent-stats.json"))
+STATS_PATH = str(Path(__file__).parent.parent / "agent-stats.json")
 
 def record(model, task_type, success, label=""):
     with open(STATS_PATH) as f:

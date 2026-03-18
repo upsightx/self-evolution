@@ -336,6 +336,137 @@ def recent_by_days(days=7, table="observations"):
     return results
 
 
+# ============ Context Builder ============
+
+def _extract_date(timestamp_str):
+    """Extract YYYY-MM-DD from an ISO timestamp string."""
+    if not timestamp_str:
+        return "未知日期"
+    import re
+    match = re.search(r'\d{4}-\d{2}-\d{2}', str(timestamp_str))
+    return match.group(0) if match else "未知日期"
+
+
+def _format_entry(entry_type, title, content):
+    """Format a single entry line. Truncate content to 200 chars."""
+    if content and len(content) > 200:
+        content = content[:197] + "..."
+    suffix = f": {content}" if content else ""
+    return f"[{entry_type}] {title}{suffix}"
+
+
+def _group_by_date(results, entry_type):
+    """Group search results by date, returning list of (date, entries)."""
+    groups = {}
+    for r in results:
+        date = _extract_date(r.get("timestamp"))
+        groups.setdefault(date, [])
+        content = r.get("narrative") or r.get("decision") or ""
+        groups[date].append(_format_entry(
+            entry_type if entry_type else r.get("type", "unknown"),
+            r.get("title", ""),
+            content
+        ))
+    return groups
+
+
+def search_with_context(query, max_chars=6000, top_per_group=3):
+    """搜索并构建上下文字符串
+
+    流程：
+    1. 用现有 search() + search_decisions() 获取结果
+    2. 按日期分组
+    3. 每组取 top_per_group 条
+    4. 拼接并截断到 max_chars（从最旧的组开始删，保留最新的）
+    5. 返回格式化的上下文字符串
+    """
+    obs = search(query=query, limit=50)
+    decs = search_decisions(query=query, limit=50)
+
+    # Group by date
+    merged = {}  # date -> [lines]
+    for r in obs:
+        date = _extract_date(r.get("timestamp"))
+        merged.setdefault(date, [])
+        content = r.get("narrative") or ""
+        merged[date].append(_format_entry(r.get("type", "observation"), r.get("title", ""), content))
+    for r in decs:
+        date = _extract_date(r.get("timestamp"))
+        merged.setdefault(date, [])
+        content = r.get("decision") or ""
+        merged[date].append(_format_entry("decision", r.get("title", ""), content))
+
+    if not merged:
+        return ""
+
+    # Sort dates descending (newest first), each group top_per_group
+    sorted_dates = sorted(merged.keys(), reverse=True)
+
+    # Build parts per date group
+    date_parts = []  # [(date, text_block)]
+    for date in sorted_dates:
+        entries = merged[date][:top_per_group]
+        block = f"--- {date} ---\n" + "\n".join(entries)
+        date_parts.append((date, block))
+
+    # Truncation: remove oldest groups first until within budget
+    # date_parts[0] is newest, date_parts[-1] is oldest
+    while len(date_parts) > 1:
+        total = sum(len(dp[1]) for dp in date_parts) + len(date_parts) - 1  # newlines between blocks
+        if total <= max_chars:
+            break
+        date_parts.pop()  # remove oldest
+
+    result = "\n\n".join(dp[1] for dp in date_parts)
+
+    # Hard truncate if single group still exceeds
+    if len(result) > max_chars:
+        result = result[:max_chars - 3] + "..."
+
+    return result
+
+
+def search_with_metadata(query, max_chars=6000, top_per_group=3):
+    """搜索并返回上下文+元数据
+
+    返回: {
+        "context": "格式化的上下文字符串",
+        "total_results": 10,
+        "context_chars": 5800,
+        "truncated": False,
+        "date_range": {"earliest": "2026-03-15", "latest": "2026-03-18"}
+    }
+    """
+    obs = search(query=query, limit=50)
+    decs = search_decisions(query=query, limit=50)
+    total_results = len(obs) + len(decs)
+
+    # Collect all dates for range
+    all_dates = []
+    for r in obs + decs:
+        d = _extract_date(r.get("timestamp"))
+        if d != "未知日期":
+            all_dates.append(d)
+
+    # Build context using search_with_context
+    context = search_with_context(query, max_chars=max_chars, top_per_group=top_per_group)
+
+    # Determine if truncated: rebuild without limit to compare
+    full_context = search_with_context(query, max_chars=999999, top_per_group=top_per_group)
+    truncated = len(full_context) > len(context)
+
+    return {
+        "context": context,
+        "total_results": total_results,
+        "context_chars": len(context),
+        "truncated": truncated,
+        "date_range": {
+            "earliest": min(all_dates) if all_dates else None,
+            "latest": max(all_dates) if all_dates else None,
+        }
+    }
+
+
 def import_json(data):
     """Import from JSON. Format: {observations: [...], decisions: [...], summary: "..."}"""
     imported = {"observations": 0, "decisions": 0, "summaries": 0}
