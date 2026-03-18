@@ -14,15 +14,18 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "memory.db"
+from db_common import DB_PATH, get_db as _get_db_common
 
 SUPPORTED_TABLES = ("observations", "decisions")
 
 
 def _get_db(db_path=None):
-    db = sqlite3.connect(str(db_path or DB_PATH))
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA journal_mode=WAL")
+    if db_path:
+        db = sqlite3.connect(str(db_path))
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA journal_mode=WAL")
+        return db
+    return _get_db_common()
     return db
 
 

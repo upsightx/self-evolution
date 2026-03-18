@@ -20,7 +20,7 @@ from collections import Counter
 from pathlib import Path
 
 STATS_PATH = Path(__file__).parent.parent / "agent-stats.json"
-DB_PATH = Path(__file__).parent / "memory.db"
+from db_common import DB_PATH
 TEMPLATES_DIR = Path(__file__).parent.parent / "agent-templates" / "templates"
 
 

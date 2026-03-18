@@ -23,7 +23,9 @@ from pathlib import Path
 
 STATS_PATH = str(Path(__file__).parent.parent / "agent-stats.json")
 MEMORY_DIR = str(Path(__file__).parent.parent)
-DB_PATH = str(Path(__file__).parent / "memory.db")
+from db_common import DB_PATH as _DB_PATH
+
+DB_PATH = str(_DB_PATH)
 
 # --- 模型名正则 ---
 MODEL_PATTERNS = {

@@ -10,10 +10,10 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent.parent  # project root  # memory/
+BASE_DIR = Path(__file__).resolve().parent.parent  # memory/
 FAILURES_PATH = BASE_DIR / "failures.md"
 STATS_PATH = BASE_DIR / "agent-stats.json"
-DB_PATH = Path(__file__).parent / "memory.db"
+from db_common import DB_PATH
 
 # keyword → skill suggestion mapping
 SKILL_MAP = {

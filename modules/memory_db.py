@@ -22,14 +22,7 @@ import math
 from datetime import datetime, timedelta
 from pathlib import Path
 
-DB_PATH = Path(os.environ.get("SELF_EVOLUTION_DB", Path(__file__).parent / "memory.db"))
-
-
-def get_db():
-    db = sqlite3.connect(str(DB_PATH))
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA journal_mode=WAL")
-    return db
+from db_common import DB_PATH, get_db
 
 
 def init_db():
@@ -641,10 +634,7 @@ def import_json(data):
 
 # ============ Embedding / Semantic Search ============
 
-SILICONFLOW_API_KEY = os.environ.get(
-    "SILICONFLOW_API_KEY",
-    os.environ.get("SILICONFLOW_API_KEY", "")
-)
+SILICONFLOW_API_KEY = os.environ.get("SILICONFLOW_API_KEY", "")
 SILICONFLOW_ENDPOINT = "https://api.siliconflow.cn/v1/embeddings"
 EMBED_MODEL = "BAAI/bge-m3"
 EMBED_DIM = 1024
@@ -677,6 +667,10 @@ def embed_text(texts):
         list[list[float]] — one embedding per input text
     """
     if not texts:
+        return []
+
+    if not SILICONFLOW_API_KEY:
+        print("Warning: SILICONFLOW_API_KEY not set, skipping embedding")
         return []
 
     all_embeddings = []

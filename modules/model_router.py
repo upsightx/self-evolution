@@ -130,7 +130,9 @@ def recommend_for_description(description: str, strategy: str = "balanced") -> d
 
 
 DEFAULT_STATS_PATH = str(Path(__file__).parent.parent / "agent-stats.json")
-DEFAULT_DB_PATH = str(Path(__file__).parent / "memory.db")
+from db_common import DB_PATH as _DB_PATH
+
+DEFAULT_DB_PATH = str(_DB_PATH)
 
 # ── Data Loading ─────────────────────────────────────────────────────────────
 

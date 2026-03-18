@@ -151,10 +151,9 @@ def extract_todos_with_llm(text: str) -> list[dict]:
         [{"title": "...", "confidence": 0.5-0.9, "time_hint": "..."}]
         解析失败返回空列表。
     """
-    api_key = os.environ.get(
-        "MINIMAX_API_KEY",
-        os.environ.get("MINIMAX_API_KEY", "")
-    )
+    api_key = os.environ.get("MINIMAX_API_KEY", "")
+    if not api_key:
+        return []
     url = "https://api.minimaxi.com/v1/chat/completions"
     payload = _json.dumps({
         "model": "MiniMax-M2.5",

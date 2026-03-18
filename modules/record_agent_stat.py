@@ -2,25 +2,35 @@
 """记录子 Agent 执行结果到 agent-stats.json"""
 import json, sys, os
 from datetime import datetime
+from pathlib import Path
 
 STATS_PATH = str(Path(__file__).parent.parent / "agent-stats.json")
 
+
 def record(model, task_type, success, label=""):
-    with open(STATS_PATH) as f:
-        data = json.load(f)
-    
+    if not os.path.exists(STATS_PATH):
+        print(f"Warning: {STATS_PATH} not found, skipping")
+        return
+
+    try:
+        with open(STATS_PATH) as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, IOError) as e:
+        print(f"Error reading {STATS_PATH}: {e}")
+        return
+
     # 更新 by_model
     if model not in data["stats"]["by_model"]:
         data["stats"]["by_model"][model] = {"total": 0, "success": 0, "fail": 0}
     data["stats"]["by_model"][model]["total"] += 1
     data["stats"]["by_model"][model]["success" if success else "fail"] += 1
-    
+
     # 更新 by_task_type
     if task_type not in data["stats"]["by_task_type"]:
         data["stats"]["by_task_type"][task_type] = {"total": 0, "success": 0, "fail": 0}
     data["stats"]["by_task_type"][task_type]["total"] += 1
     data["stats"]["by_task_type"][task_type]["success" if success else "fail"] += 1
-    
+
     # 添加到 recent（保留最近 50 条）
     data["stats"]["recent"].append({
         "time": datetime.now().isoformat(),
@@ -31,10 +41,17 @@ def record(model, task_type, success, label=""):
     })
     data["stats"]["recent"] = data["stats"]["recent"][-50:]
     data["updated"] = datetime.now().strftime("%Y-%m-%d")
-    
-    with open(STATS_PATH, "w") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    
+
+    # 原子写入
+    tmp_path = STATS_PATH + ".tmp"
+    try:
+        with open(tmp_path, "w") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, STATS_PATH)
+    except IOError as e:
+        print(f"Error writing {STATS_PATH}: {e}")
+        return
+
     print(f"Recorded: {model}/{task_type} {'✅' if success else '❌'} {label}")
 
 if __name__ == "__main__":

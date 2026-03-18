@@ -13,7 +13,9 @@ import tempfile
 from collections import Counter
 from pathlib import Path
 
-DEFAULT_DB = str(Path(__file__).parent / "memory.db")
+from db_common import DB_PATH
+
+DEFAULT_DB = str(DB_PATH)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS task_outcomes (
