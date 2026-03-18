@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for search_with_context and search_with_metadata in memory_db.py.
 
-Uses the real memory.db at the project memory.db (auto-detected via Path(__file__))
+Uses the real memory.db at the project memory.db (auto-detected)
 """
 
 import os
@@ -9,10 +9,21 @@ import sys
 import unittest
 
 # Ensure the module is importable
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "modules"))
-os.environ.setdefault("SELF_EVOLUTION_DB", os.path.join(os.path.dirname(__file__), "..", "modules", "memory.db"))
+sys.path.insert(0, os.path.dirname(__file__))
+os.environ["SELF_EVOLUTION_DB"] = os.path.join(os.path.dirname(__file__), "memory.db")
 
+import importlib
 import memory_db
+importlib.reload(memory_db)
+
+
+_REAL_DB = os.path.join(os.path.dirname(__file__), "memory.db")
+
+
+def setUpModule():
+    """Force memory_db to use the real DB before any test in this module."""
+    os.environ["SELF_EVOLUTION_DB"] = _REAL_DB
+    importlib.reload(memory_db)
 
 
 class TestSearchWithContext(unittest.TestCase):

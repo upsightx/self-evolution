@@ -1,12 +1,16 @@
 """
 Todo extractor - 从对话文本中用纯规则提取待办事项。
 采用"宽松提取+置信度分级"思路，零LLM成本。
+可选 LLM 兜底层：规则提取不到时，用 MiniMax 做一次提取。
 
-依赖：纯 stdlib (re, os, difflib)
+依赖：纯 stdlib (re, os, difflib, urllib, json)
 """
 
 import re
 import os
+import json as _json
+import urllib.request
+import urllib.error
 from difflib import SequenceMatcher
 
 # ============================================================
@@ -140,16 +144,83 @@ def _is_duplicate(title: str, existing_titles: list[str], threshold: float = 0.7
     return False
 
 
+def extract_todos_with_llm(text: str) -> list[dict]:
+    """用 MiniMax LLM 从文本中提取待办事项（兜底层）。
+
+    Returns:
+        [{"title": "...", "confidence": 0.5-0.9, "time_hint": "..."}]
+        解析失败返回空列表。
+    """
+    api_key = os.environ.get(
+        "MINIMAX_API_KEY",
+        os.environ.get("MINIMAX_API_KEY", "")
+    )
+    url = "https://api.minimaxi.com/v1/chat/completions"
+    payload = _json.dumps({
+        "model": "MiniMax-M2.5",
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "你是待办提取助手。从文本中识别待办事项。\n"
+                    "返回JSON数组，每项包含 title(≤20字)、confidence(0.5-0.9)、time_hint(时间词或空)。\n"
+                    "没有待办返回空数组。只返回JSON，不要解释。"
+                ),
+            },
+            {"role": "user", "content": text},
+        ],
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = _json.loads(resp.read().decode("utf-8"))
+        content = body["choices"][0]["message"]["content"]
+        # Strip <think>...</think> reasoning tags if present
+        content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+        content = content.strip()
+        # Strip markdown code fences if present
+        if content.startswith("```"):
+            content = re.sub(r'^```(?:json)?\s*', '', content)
+            content = re.sub(r'\s*```$', '', content)
+        items = _json.loads(content)
+        if not isinstance(items, list):
+            return []
+        # Validate and normalise each item
+        result = []
+        for item in items:
+            if not isinstance(item, dict) or "title" not in item:
+                continue
+            result.append({
+                "title": str(item["title"])[:20],
+                "confidence": float(item.get("confidence", 0.6)),
+                "time_hint": str(item.get("time_hint", "")),
+            })
+        return result
+    except Exception:
+        return []
+
+
 def extract_todos_from_text(
     text: str,
-    pending_tasks_path: str = ""
+    pending_tasks_path: str = "",
+    use_llm: bool = False,
 ) -> list[dict]:
-    """从文本中用规则提取待办
+    """从文本中提取待办（规则引擎 + 可选 LLM 兜底）
 
     Args:
         text: 对话文本（可以是多行）
         pending_tasks_path: pending-tasks.md 的路径，用于去重。
                            为空则使用默认路径。
+        use_llm: 为 True 时，规则提取为空则调用 LLM 兜底。
 
     Returns:
         [{"title": "...", "confidence": 0.8, "source_text": "...", "time_hint": "..."}]
@@ -218,6 +289,29 @@ def extract_todos_from_text(
             seen_titles.add(best_match)
             existing_titles.append(best_match)  # 后续行也不重复
 
+    # LLM 兜底：规则提取为空且启用 LLM 时
+    if use_llm and not results:
+        llm_items = extract_todos_with_llm(text)
+        for item in llm_items:
+            title = _clean_title(item["title"])
+            if len(title) < MIN_TITLE_LEN:
+                continue
+            if title in seen_titles:
+                continue
+            if _is_duplicate(title, existing_titles):
+                continue
+            # LLM 结果 confidence 统一降 0.1
+            confidence = max(0.0, item["confidence"] - 0.1)
+            time_hint = item.get("time_hint", "")
+            results.append({
+                "title": title,
+                "confidence": confidence,
+                "source_text": text[:80],
+                "time_hint": time_hint,
+            })
+            seen_titles.add(title)
+            existing_titles.append(title)
+
     return results
 
 
@@ -229,10 +323,17 @@ if __name__ == '__main__':
     import sys
     import json
 
-    if len(sys.argv) > 1:
-        text = ' '.join(sys.argv[1:])
+    use_llm = False
+    args = sys.argv[1:]
+
+    if '--llm' in args:
+        use_llm = True
+        args.remove('--llm')
+
+    if args:
+        text = ' '.join(args)
     else:
         text = sys.stdin.read()
 
-    todos = extract_todos_from_text(text)
+    todos = extract_todos_from_text(text, use_llm=use_llm)
     print(json.dumps(todos, ensure_ascii=False, indent=2))

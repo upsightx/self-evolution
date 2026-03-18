@@ -15,6 +15,10 @@ import sqlite3
 import json
 import os
 import sys
+import struct
+import hashlib
+import urllib.request
+import math
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -112,6 +116,16 @@ def init_db():
             INSERT INTO decisions_fts(rowid, title, decision, rejected_alternatives, rationale)
             VALUES (new.id, new.title, new.decision, new.rejected_alternatives, new.rationale);
         END;
+
+        CREATE TABLE IF NOT EXISTS embeddings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_table TEXT NOT NULL,
+            source_id INTEGER NOT NULL,
+            text_hash TEXT NOT NULL,
+            embedding BLOB NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(source_table, source_id)
+        );
     """)
     db.commit()
     db.close()
@@ -370,7 +384,138 @@ def _group_by_date(results, entry_type):
     return groups
 
 
-def search_with_context(query, max_chars=6000, top_per_group=3):
+def _build_context_from_entries(entries, max_chars, top_per_group):
+    """Shared logic: take a list of dicts with 'type'/'title'/'content'/'timestamp',
+    group by date, truncate, return formatted string."""
+    merged = {}
+    for e in entries:
+        date = _extract_date(e.get("timestamp"))
+        merged.setdefault(date, [])
+        merged[date].append(_format_entry(e.get("type", "unknown"), e.get("title", ""), e.get("content", "")))
+
+    if not merged:
+        return ""
+
+    sorted_dates = sorted(merged.keys(), reverse=True)
+    date_parts = []
+    for date in sorted_dates:
+        block_entries = merged[date][:top_per_group]
+        block = f"--- {date} ---\n" + "\n".join(block_entries)
+        date_parts.append((date, block))
+
+    while len(date_parts) > 1:
+        total = sum(len(dp[1]) for dp in date_parts) + len(date_parts) - 1
+        if total <= max_chars:
+            break
+        date_parts.pop()
+
+    result = "\n\n".join(dp[1] for dp in date_parts)
+    if len(result) > max_chars:
+        result = result[:max_chars - 3] + "..."
+    return result
+
+
+def _search_with_context_semantic(query, max_chars, top_per_group):
+    """Semantic-only search_with_context."""
+    sem_results = semantic_search(query, limit=50)
+    db = get_db()
+    entries = []
+    for r in sem_results:
+        if r["source_table"] == "observations":
+            row = db.execute("SELECT type, title, narrative, timestamp FROM observations WHERE id = ?",
+                             (r["source_id"],)).fetchone()
+            if row:
+                entries.append({
+                    "type": row["type"], "title": row["title"],
+                    "content": row["narrative"] or "", "timestamp": row["timestamp"]
+                })
+        else:
+            row = db.execute("SELECT title, decision, timestamp FROM decisions WHERE id = ?",
+                             (r["source_id"],)).fetchone()
+            if row:
+                entries.append({
+                    "type": "decision", "title": row["title"],
+                    "content": row["decision"] or "", "timestamp": row["timestamp"]
+                })
+    db.close()
+    return _build_context_from_entries(entries, max_chars, top_per_group)
+
+
+def _search_with_context_hybrid(query, max_chars, top_per_group):
+    """Hybrid: merge keyword + semantic results, deduplicate, weighted score."""
+    # Keyword results
+    obs_kw = search(query=query, limit=30)
+    decs_kw = search_decisions(query=query, limit=30)
+
+    # Semantic results
+    try:
+        sem_results = semantic_search(query, limit=30)
+    except Exception:
+        sem_results = []
+
+    # Build unified scored dict: key=(source_table, source_id) -> {score, entry_data}
+    scored = {}  # (table, id) -> {"kw_score": float, "sem_score": float, "entry": dict}
+
+    # Keyword results get rank-based score (1.0 for first, decreasing)
+    for rank, r in enumerate(obs_kw):
+        key = ("observations", r["id"])
+        kw_score = 1.0 / (rank + 1)
+        scored[key] = {
+            "kw_score": kw_score, "sem_score": 0.0,
+            "entry": {"type": r.get("type", "observation"), "title": r.get("title", ""),
+                       "content": r.get("narrative") or "", "timestamp": r.get("timestamp")}
+        }
+    for rank, r in enumerate(decs_kw):
+        key = ("decisions", r["id"])
+        kw_score = 1.0 / (rank + 1)
+        scored[key] = {
+            "kw_score": kw_score, "sem_score": 0.0,
+            "entry": {"type": "decision", "title": r.get("title", ""),
+                       "content": r.get("decision") or "", "timestamp": r.get("timestamp")}
+        }
+
+    # Semantic results
+    db = get_db()
+    for r in sem_results:
+        key = (r["source_table"], r["source_id"])
+        sem_score = r["score"]
+        if key in scored:
+            scored[key]["sem_score"] = sem_score
+        else:
+            # Fetch entry data
+            if r["source_table"] == "observations":
+                row = db.execute("SELECT type, title, narrative, timestamp FROM observations WHERE id = ?",
+                                 (r["source_id"],)).fetchone()
+                if row:
+                    scored[key] = {
+                        "kw_score": 0.0, "sem_score": sem_score,
+                        "entry": {"type": row["type"], "title": row["title"],
+                                   "content": row["narrative"] or "", "timestamp": row["timestamp"]}
+                    }
+            else:
+                row = db.execute("SELECT title, decision, timestamp FROM decisions WHERE id = ?",
+                                 (r["source_id"],)).fetchone()
+                if row:
+                    scored[key] = {
+                        "kw_score": 0.0, "sem_score": sem_score,
+                        "entry": {"type": "decision", "title": row["title"],
+                                   "content": row["decision"] or "", "timestamp": row["timestamp"]}
+                    }
+    db.close()
+
+    # Weighted combined score: 0.4 * keyword + 0.6 * semantic
+    combined = []
+    for key, val in scored.items():
+        final_score = 0.4 * val["kw_score"] + 0.6 * val["sem_score"]
+        combined.append((final_score, val["entry"]))
+
+    combined.sort(key=lambda x: x[0], reverse=True)
+    entries = [c[1] for c in combined[:50]]
+
+    return _build_context_from_entries(entries, max_chars, top_per_group)
+
+
+def search_with_context(query, max_chars=6000, top_per_group=3, mode="keyword"):
     """搜索并构建上下文字符串
 
     流程：
@@ -379,7 +524,17 @@ def search_with_context(query, max_chars=6000, top_per_group=3):
     3. 每组取 top_per_group 条
     4. 拼接并截断到 max_chars（从最旧的组开始删，保留最新的）
     5. 返回格式化的上下文字符串
+
+    Args:
+        mode: "keyword" (default, FTS5+LIKE), "semantic" (embedding cosine),
+              "hybrid" (merge both, weighted score)
     """
+    if mode == "semantic":
+        return _search_with_context_semantic(query, max_chars, top_per_group)
+    elif mode == "hybrid":
+        return _search_with_context_hybrid(query, max_chars, top_per_group)
+
+    # Default: keyword mode (original behavior)
     obs = search(query=query, limit=50)
     decs = search_decisions(query=query, limit=50)
 
@@ -484,6 +639,197 @@ def import_json(data):
     return imported
 
 
+# ============ Embedding / Semantic Search ============
+
+SILICONFLOW_API_KEY = os.environ.get(
+    "SILICONFLOW_API_KEY",
+    os.environ.get("SILICONFLOW_API_KEY", "")
+)
+SILICONFLOW_ENDPOINT = "https://api.siliconflow.cn/v1/embeddings"
+EMBED_MODEL = "BAAI/bge-m3"
+EMBED_DIM = 1024
+EMBED_BATCH_SIZE = 20
+
+
+def _text_hash(text):
+    """SHA256 hash of text for change detection."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _pack_embedding(vec):
+    """Pack a list of floats into a BLOB using struct (float32)."""
+    return struct.pack(f"{len(vec)}f", *vec)
+
+
+def _unpack_embedding(blob):
+    """Unpack a BLOB back into a list of floats."""
+    n = len(blob) // 4
+    return list(struct.unpack(f"{n}f", blob))
+
+
+def embed_text(texts):
+    """Call SiliconFlow BGE-M3 API to get embeddings.
+
+    Args:
+        texts: list[str] — texts to embed
+
+    Returns:
+        list[list[float]] — one embedding per input text
+    """
+    if not texts:
+        return []
+
+    all_embeddings = []
+    for i in range(0, len(texts), EMBED_BATCH_SIZE):
+        batch = texts[i:i + EMBED_BATCH_SIZE]
+        payload = json.dumps({
+            "model": EMBED_MODEL,
+            "input": batch,
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            SILICONFLOW_ENDPOINT,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {SILICONFLOW_API_KEY}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+
+        # Sort by index to preserve order
+        sorted_data = sorted(body["data"], key=lambda x: x["index"])
+        all_embeddings.extend([item["embedding"] for item in sorted_data])
+
+    return all_embeddings
+
+
+def _cosine_similarity(a, b):
+    """Cosine similarity between two vectors. Pure Python, no numpy."""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def build_embeddings():
+    """Build/update embeddings for all observations and decisions."""
+    init_db()
+    db = get_db()
+
+    # Gather records to embed
+    tasks = []  # (source_table, source_id, text, text_hash)
+
+    # Observations: title + narrative + facts
+    for row in db.execute("SELECT id, title, narrative, facts FROM observations").fetchall():
+        parts = [row["title"] or ""]
+        if row["narrative"]:
+            parts.append(row["narrative"])
+        if row["facts"]:
+            parts.append(row["facts"])
+        text = "\n".join(parts)
+        tasks.append(("observations", row["id"], text, _text_hash(text)))
+
+    # Decisions: title + decision + rationale
+    for row in db.execute("SELECT id, title, decision, rationale FROM decisions").fetchall():
+        parts = [row["title"] or ""]
+        if row["decision"]:
+            parts.append(row["decision"])
+        if row["rationale"]:
+            parts.append(row["rationale"])
+        text = "\n".join(parts)
+        tasks.append(("decisions", row["id"], text, _text_hash(text)))
+
+    if not tasks:
+        print("No records to embed.")
+        db.close()
+        return
+
+    # Check existing embeddings to skip unchanged
+    existing = {}
+    for row in db.execute("SELECT source_table, source_id, text_hash FROM embeddings").fetchall():
+        existing[(row["source_table"], row["source_id"])] = row["text_hash"]
+
+    to_embed = []
+    for source_table, source_id, text, th in tasks:
+        key = (source_table, source_id)
+        if key in existing and existing[key] == th:
+            continue  # unchanged, skip
+        to_embed.append((source_table, source_id, text, th))
+
+    if not to_embed:
+        print("All embeddings up to date.")
+        db.close()
+        return
+
+    print(f"Embedding {len(to_embed)} records...")
+    texts_to_embed = [t[2] for t in to_embed]
+    vectors = embed_text(texts_to_embed)
+
+    for (source_table, source_id, text, th), vec in zip(to_embed, vectors):
+        blob = _pack_embedding(vec)
+        db.execute("""
+            INSERT INTO embeddings (source_table, source_id, text_hash, embedding)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(source_table, source_id) DO UPDATE SET
+                text_hash = excluded.text_hash,
+                embedding = excluded.embedding,
+                created_at = datetime('now')
+        """, (source_table, source_id, th, blob))
+
+    db.commit()
+    db.close()
+    print(f"Done. Embedded {len(to_embed)} records.")
+
+
+def semantic_search(query, limit=10):
+    """Semantic search using cosine similarity against stored embeddings.
+
+    Args:
+        query: search query string
+        limit: max results to return
+
+    Returns:
+        list[dict] with keys: source_table, source_id, title, score
+    """
+    init_db()
+    query_vec = embed_text([query])[0]
+
+    db = get_db()
+    rows = db.execute("SELECT source_table, source_id, embedding FROM embeddings").fetchall()
+
+    scored = []
+    for row in rows:
+        vec = _unpack_embedding(row["embedding"])
+        score = _cosine_similarity(query_vec, vec)
+        scored.append((score, row["source_table"], row["source_id"]))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = scored[:limit]
+
+    results = []
+    for score, source_table, source_id in top:
+        if source_table == "observations":
+            r = db.execute("SELECT title, timestamp FROM observations WHERE id = ?", (source_id,)).fetchone()
+        else:
+            r = db.execute("SELECT title, timestamp FROM decisions WHERE id = ?", (source_id,)).fetchone()
+        if r:
+            results.append({
+                "source_table": source_table,
+                "source_id": source_id,
+                "title": r["title"],
+                "timestamp": r["timestamp"],
+                "score": round(score, 4),
+            })
+
+    db.close()
+    return results
+
+
 # ============ CLI ============
 
 def main():
@@ -500,6 +846,8 @@ Usage: memory_db.py <command> [args]
   get <id>                                Get full observation
   stats                                   Statistics
   import <json_file>                      Import from JSON
+  embed                                   Build/update all embeddings
+  semantic <query>                        Semantic search
 """)
         return
 
@@ -542,6 +890,18 @@ Usage: memory_db.py <command> [args]
     elif cmd == "import":
         with open(sys.argv[2]) as f:
             print(f"Imported: {import_json(json.load(f))}")
+    elif cmd == "embed":
+        build_embeddings()
+    elif cmd == "semantic":
+        if len(sys.argv) < 3:
+            print("Usage: semantic <query>")
+            return
+        results = semantic_search(sys.argv[2])
+        if not results:
+            print("No results. Run 'embed' first to build embeddings.")
+            return
+        for r in results:
+            print(f"  [{r['source_table']}#{r['source_id']}] (score={r['score']}) {r['title']}")
     else:
         print(f"Unknown: {cmd}")
 
