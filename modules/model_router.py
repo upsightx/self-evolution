@@ -129,7 +129,7 @@ def recommend_for_description(description: str, strategy: str = "balanced") -> d
     }
 
 
-DEFAULT_STATS_PATH = "/root/.openclaw/workspace/memory/agent-stats.json"
+DEFAULT_STATS_PATH = str(Path(__file__).parent.parent / "agent-stats.json")
 DEFAULT_DB_PATH = str(Path(__file__).parent / "memory.db")
 
 # ── Data Loading ─────────────────────────────────────────────────────────────
