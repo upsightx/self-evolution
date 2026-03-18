@@ -32,8 +32,8 @@ DEFAULT_RECOMMENDATIONS = {
 
 TASK_KEYWORDS = {
     "coding": ["写代码", "实现", "开发", "bug", "fix", "feature", "函数", "类", "API", "接口", "测试", "test", "代码", "脚本", "script", "python", "程序", "编程", "编写", "写一个"],
-    "research": ["搜索", "调研", "查找", "整理", "收集", "分析", "对比", "学习", "了解"],
-    "file_ops": ["文件", "复制", "移动", "删除", "创建目录", "上传", "下载", "备份"],
+    "research": ["搜索", "调研", "查找", "整理", "收集", "分析", "对比", "学习", "了解", "搜一下", "查一下", "找一下", "看看", "融资", "论文", "新闻", "趋势", "报告"],
+    "file_ops": ["文件", "复制", "移动", "删除", "创建目录", "上传", "下载", "备份", "归档", "archive", "同步", "清理文件"],
     "refactor": ["重构", "优化", "重写", "清理", "整合", "迁移", "升级", "精简"],
     "skill_creation": ["skill", "技能", "SKILL.md", "创建skill", "新skill"],
 }
@@ -129,7 +129,7 @@ def recommend_for_description(description: str, strategy: str = "balanced") -> d
     }
 
 
-DEFAULT_STATS_PATH = str(Path(__file__).parent.parent / "agent-stats.json")
+DEFAULT_STATS_PATH = "/root/.openclaw/workspace/memory/agent-stats.json"
 DEFAULT_DB_PATH = str(Path(__file__).parent / "memory.db")
 
 # ── Data Loading ─────────────────────────────────────────────────────────────
