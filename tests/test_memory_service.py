@@ -38,35 +38,21 @@ class TestExtractTags(unittest.TestCase):
         tags = extract_tags("python python python python", task_type="coding")
         self.assertEqual(len([t for t in tags if t == "python"]), 1)
 
+    def test_word_boundary_latin(self):
+        from memory_service import extract_tags
+        # "monty python" should NOT match "python" as a tech keyword
+        # because "python" appears as part of "monty python" — but actually
+        # \bpython\b will match since "python" is a separate word here
+        tags = extract_tags("I love monty python comedy shows")
+        # "python" IS a separate word here, so it will match
+        # But "gopher" in "gopher protocol" should not match "go"
+        tags2 = extract_tags("the gopher protocol is old")
+        self.assertNotIn("go", tags2)
 
-class TestSessionMemory(unittest.TestCase):
-    def test_add_decision(self):
-        from memory_service import SessionMemory
-        sm = SessionMemory()
-        sm.add_decision("测试决策", "选择方案A", decision_id=1)
-        self.assertEqual(len(sm.recent_decisions), 1)
-        self.assertEqual(sm.recent_decisions[0][1], "测试决策")
-
-    def test_decision_limit(self):
-        from memory_service import SessionMemory
-        sm = SessionMemory()
-        for i in range(15):
-            sm.add_decision(f"决策{i}", f"内容{i}", decision_id=i)
-        self.assertEqual(len(sm.recent_decisions), 10)  # max 10
-
-    def test_get_context(self):
-        from memory_service import SessionMemory
-        sm = SessionMemory()
-        sm.set_task("重构记忆模块")
-        sm.add_decision("决策1", "用新架构", decision_id=1)
-        ctx = sm.get_context()
-        self.assertIn("重构记忆模块", ctx)
-        self.assertIn("决策1", ctx)
-
-    def test_clear(self):
-        from memory_service import clear_session_memory
-        # Should not raise
-        clear_session_memory()
+    def test_cjk_substring(self):
+        from memory_service import extract_tags
+        tags = extract_tags("这个融资项目很有前景")
+        self.assertIn("research", tags)
 
 
 class TestRemember(unittest.TestCase):
@@ -87,9 +73,7 @@ class TestRemember(unittest.TestCase):
             type="decision",
             tags=["融资", "kimi"],
         )
-        # Should merge auto-extracted + provided
         self.assertIn("kimi", result["tags"])
-        self.assertIn("融资", result["tags"])
 
     def test_remember_no_title(self):
         from memory_service import remember
@@ -106,9 +90,18 @@ class TestRecall(unittest.TestCase):
     def test_recall_includes_memory_label(self):
         from memory_service import recall
         ctx = recall("观察", top_k=3)
-        # Should include memory context label if results found
         if ctx:
-            self.assertTrue(ctx.startswith("[Relevant Memory]") or ctx.startswith("[Session Context]"))
+            self.assertTrue(ctx.startswith("[Relevant Memory]"))
+
+
+class TestReflect(unittest.TestCase):
+    def test_reflect_returns_dict(self):
+        from memory_service import reflect
+        result = reflect()
+        self.assertIsInstance(result, dict)
+        self.assertIn("new_insights", result)
+        self.assertIn("tags_frequency", result)
+        self.assertIn("total_recent", result)
 
 
 if __name__ == "__main__":

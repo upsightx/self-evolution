@@ -76,8 +76,8 @@ def prepare_dispatch(task_description: str, task_type: str | None = None) -> dic
 
     # 3. 相关记忆上下文
     try:
-        from memory_context import search_with_context
-        ctx = search_with_context(task_description, max_chars=800, top_per_group=2)
+        from memory_service import recall
+        ctx = recall(task_description, task_type=task_type, top_k=3)
         if ctx:
             result["context"] = ctx
     except Exception:
@@ -131,17 +131,17 @@ def record_completion(task_type: str, model: str, success: bool,
     except Exception as e:
         recorded.append(f"feedback_loop:error:{e}")
 
-    # 3. memory_db 观察记录（仅失败时）
+    # 3. memory_service 记录（仅失败时）
     if not success and notes:
         try:
-            from memory_db import add_observation
-            add_observation(
-                "lesson",
-                f"子Agent失败: {task_type}/{model} - {label}",
-                narrative=notes,
+            from memory_service import remember
+            remember(
+                content=f"子Agent失败: {task_type}/{model} - {label}. {notes}",
+                type="lesson",
+                task_type=task_type,
                 tags=[task_type, model, "failure"],
             )
-            recorded.append("memory_db_lesson")
+            recorded.append("memory_service")
         except Exception:
             pass
 
