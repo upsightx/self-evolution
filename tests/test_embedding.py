@@ -11,7 +11,8 @@ import json
 import struct
 
 # Ensure the module is importable
-sys.path.insert(0, os.path.dirname(__file__))
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Save original DB path, use temp DB for embedding tests
 _orig_db_env = os.environ.get("SELF_EVOLUTION_DB")
@@ -21,6 +22,7 @@ _tmp_db.close()
 
 import importlib
 import memory_db
+import memory_embedding
 importlib.reload(memory_db)
 
 
@@ -42,28 +44,28 @@ class TestCosineSimlarity(unittest.TestCase):
 
     def test_identical_vectors(self):
         a = [1.0, 2.0, 3.0]
-        self.assertAlmostEqual(memory_db._cosine_similarity(a, a), 1.0, places=6)
+        self.assertAlmostEqual(memory_embedding._cosine_similarity(a, a), 1.0, places=6)
 
     def test_orthogonal_vectors(self):
         a = [1.0, 0.0]
         b = [0.0, 1.0]
-        self.assertAlmostEqual(memory_db._cosine_similarity(a, b), 0.0, places=6)
+        self.assertAlmostEqual(memory_embedding._cosine_similarity(a, b), 0.0, places=6)
 
     def test_opposite_vectors(self):
         a = [1.0, 2.0, 3.0]
         b = [-1.0, -2.0, -3.0]
-        self.assertAlmostEqual(memory_db._cosine_similarity(a, b), -1.0, places=6)
+        self.assertAlmostEqual(memory_embedding._cosine_similarity(a, b), -1.0, places=6)
 
     def test_zero_vector(self):
         a = [0.0, 0.0, 0.0]
         b = [1.0, 2.0, 3.0]
-        self.assertEqual(memory_db._cosine_similarity(a, b), 0.0)
+        self.assertEqual(memory_embedding._cosine_similarity(a, b), 0.0)
 
     def test_known_value(self):
         a = [1.0, 0.0, 1.0]
         b = [0.0, 1.0, 1.0]
         # dot=1, |a|=sqrt(2), |b|=sqrt(2), cos=1/2=0.5
-        self.assertAlmostEqual(memory_db._cosine_similarity(a, b), 0.5, places=6)
+        self.assertAlmostEqual(memory_embedding._cosine_similarity(a, b), 0.5, places=6)
 
 
 class TestPackUnpack(unittest.TestCase):
@@ -71,27 +73,27 @@ class TestPackUnpack(unittest.TestCase):
 
     def test_round_trip(self):
         vec = [0.1 * i for i in range(1024)]
-        blob = memory_db._pack_embedding(vec)
-        recovered = memory_db._unpack_embedding(blob)
+        blob = memory_embedding._pack_embedding(vec)
+        recovered = memory_embedding._unpack_embedding(blob)
         self.assertEqual(len(recovered), 1024)
         for a, b in zip(vec, recovered):
             self.assertAlmostEqual(a, b, places=5)
 
     def test_blob_size(self):
         vec = [0.0] * 1024
-        blob = memory_db._pack_embedding(vec)
+        blob = memory_embedding._pack_embedding(vec)
         self.assertEqual(len(blob), 1024 * 4)  # float32 = 4 bytes
 
 
 class TestTextHash(unittest.TestCase):
     def test_deterministic(self):
-        h1 = memory_db._text_hash("hello world")
-        h2 = memory_db._text_hash("hello world")
+        h1 = memory_embedding._text_hash("hello world")
+        h2 = memory_embedding._text_hash("hello world")
         self.assertEqual(h1, h2)
 
     def test_different_text(self):
-        h1 = memory_db._text_hash("hello")
-        h2 = memory_db._text_hash("world")
+        h1 = memory_embedding._text_hash("hello")
+        h2 = memory_embedding._text_hash("world")
         self.assertNotEqual(h1, h2)
 
 
@@ -131,11 +133,11 @@ class TestSemanticSearchMocked(unittest.TestCase):
 
         self.db.execute(
             "INSERT INTO embeddings (source_table, source_id, text_hash, embedding) VALUES (?,?,?,?)",
-            ("observations", self.obs_id, "fake_hash_1", memory_db._pack_embedding(obs_vec))
+            ("observations", self.obs_id, "fake_hash_1", memory_embedding._pack_embedding(obs_vec))
         )
         self.db.execute(
             "INSERT INTO embeddings (source_table, source_id, text_hash, embedding) VALUES (?,?,?,?)",
-            ("decisions", self.dec_id, "fake_hash_2", memory_db._pack_embedding(dec_vec))
+            ("decisions", self.dec_id, "fake_hash_2", memory_embedding._pack_embedding(dec_vec))
         )
         self.db.commit()
         self.db.close()
@@ -146,7 +148,7 @@ class TestSemanticSearchMocked(unittest.TestCase):
         query_vec[0] = 0.9
         query_vec[1] = 0.4
 
-        with patch.object(memory_db, 'embed_text', return_value=[query_vec]):
+        with patch.object(memory_embedding, 'embed_text', return_value=[query_vec]):
             results = memory_db.semantic_search("模型选择", limit=10)
 
         self.assertIsInstance(results, list)
@@ -165,7 +167,7 @@ class TestSemanticSearchMocked(unittest.TestCase):
         query_vec = [0.0] * 1024
         query_vec[0] = 1.0  # aligned with obs_vec
 
-        with patch.object(memory_db, 'embed_text', return_value=[query_vec]):
+        with patch.object(memory_embedding, 'embed_text', return_value=[query_vec]):
             results = memory_db.semantic_search("test", limit=10)
 
         # First result should be the observation (closer to query)
@@ -176,7 +178,7 @@ class TestSemanticSearchMocked(unittest.TestCase):
         query_vec = [0.0] * 1024
         query_vec[0] = 1.0
 
-        with patch.object(memory_db, 'embed_text', return_value=[query_vec]):
+        with patch.object(memory_embedding, 'embed_text', return_value=[query_vec]):
             results = memory_db.semantic_search("test", limit=1)
 
         self.assertEqual(len(results), 1)
@@ -212,11 +214,11 @@ class TestHybridSearchMocked(unittest.TestCase):
         db = memory_db.get_db()
         db.execute(
             "INSERT INTO embeddings (source_table, source_id, text_hash, embedding) VALUES (?,?,?,?)",
-            ("observations", self.obs_id, "h1", memory_db._pack_embedding(obs_vec))
+            ("observations", self.obs_id, "h1", memory_embedding._pack_embedding(obs_vec))
         )
         db.execute(
             "INSERT INTO embeddings (source_table, source_id, text_hash, embedding) VALUES (?,?,?,?)",
-            ("decisions", self.dec_id, "h2", memory_db._pack_embedding(dec_vec))
+            ("decisions", self.dec_id, "h2", memory_embedding._pack_embedding(dec_vec))
         )
         db.commit()
         db.close()
@@ -226,7 +228,7 @@ class TestHybridSearchMocked(unittest.TestCase):
         query_vec[0] = 0.5
         query_vec[1] = 0.5
 
-        with patch.object(memory_db, 'semantic_search', return_value=[
+        with patch.object(memory_embedding, 'semantic_search', return_value=[
             {"source_table": "observations", "source_id": self.obs_id,
              "title": "Opus vs MiniMax 对比", "timestamp": "2026-03-18", "score": 0.85},
             {"source_table": "decisions", "source_id": self.dec_id,
@@ -237,7 +239,7 @@ class TestHybridSearchMocked(unittest.TestCase):
         self.assertIsInstance(result, str)
 
     def test_hybrid_contains_results(self):
-        with patch.object(memory_db, 'semantic_search', return_value=[
+        with patch.object(memory_embedding, 'semantic_search', return_value=[
             {"source_table": "observations", "source_id": self.obs_id,
              "title": "Opus vs MiniMax 对比", "timestamp": "2026-03-18", "score": 0.85},
         ]):
@@ -252,7 +254,7 @@ class TestHybridSearchMocked(unittest.TestCase):
         self.assertIsInstance(result, str)
 
     def test_semantic_mode(self):
-        with patch.object(memory_db, 'semantic_search', return_value=[
+        with patch.object(memory_embedding, 'semantic_search', return_value=[
             {"source_table": "observations", "source_id": self.obs_id,
              "title": "Opus vs MiniMax 对比", "timestamp": "2026-03-18", "score": 0.9},
         ]):
@@ -261,6 +263,7 @@ class TestHybridSearchMocked(unittest.TestCase):
         self.assertIn("Opus", result)
 
 
+@unittest.skipUnless(os.environ.get("SILICONFLOW_API_KEY"), "SILICONFLOW_API_KEY not set")
 class TestEmbedTextIntegration(unittest.TestCase):
     """Integration test — requires real SiliconFlow API access.
     
@@ -299,8 +302,8 @@ class TestEmbedTextIntegration(unittest.TestCase):
             "根据任务难度挑选合适的模型",
             "今天天气真好适合出去玩",
         ])
-        sim_related = memory_db._cosine_similarity(vecs[0], vecs[1])
-        sim_unrelated = memory_db._cosine_similarity(vecs[0], vecs[2])
+        sim_related = memory_embedding._cosine_similarity(vecs[0], vecs[1])
+        sim_unrelated = memory_embedding._cosine_similarity(vecs[0], vecs[2])
         self.assertGreater(sim_related, sim_unrelated,
                            f"Related texts similarity ({sim_related:.4f}) should be > "
                            f"unrelated ({sim_unrelated:.4f})")
@@ -323,7 +326,7 @@ class TestBuildEmbeddingsMocked(unittest.TestCase):
         memory_db.add_decision("Test Decision", "We decided X", rationale="Because Y")
 
         fake_vec = [0.1] * 1024
-        with patch.object(memory_db, 'embed_text', return_value=[fake_vec, fake_vec]):
+        with patch.object(memory_embedding, 'embed_text', return_value=[fake_vec, fake_vec]):
             memory_db.build_embeddings()
 
         db = memory_db.get_db()
@@ -335,7 +338,7 @@ class TestBuildEmbeddingsMocked(unittest.TestCase):
         memory_db.add_observation("discovery", "Test", narrative="Narrative")
 
         fake_vec = [0.1] * 1024
-        with patch.object(memory_db, 'embed_text', return_value=[fake_vec]) as mock_embed:
+        with patch.object(memory_embedding, 'embed_text', return_value=[fake_vec]) as mock_embed:
             memory_db.build_embeddings()
             self.assertEqual(mock_embed.call_count, 1)
 

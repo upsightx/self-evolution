@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 # Ensure the module is importable
-sys.path.insert(0, str(Path(__file__).parent.parent / "modules"))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from template_manager import TemplateManager, VALID_TYPES
 

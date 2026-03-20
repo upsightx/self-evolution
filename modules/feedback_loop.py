@@ -4,6 +4,8 @@ Feedback Loop Automation Module
 Records task outcomes, analyzes failure patterns, and generates improvement suggestions.
 """
 
+from __future__ import annotations
+
 import sqlite3
 import os
 import sys
@@ -271,6 +273,156 @@ def get_task_history(
         conn.close()
 
 
+# ─── Template Evolution (merged from template_evolution.py) ────────────────────
+
+def _extract_failure_reasons(outcomes: list[dict]) -> list[str]:
+    """Extract common failure reason keywords from failed outcomes."""
+    failure_texts = []
+    for o in outcomes:
+        if o.get("success"):
+            continue
+        parts = []
+        if o.get("gap_analysis"):
+            parts.append(o["gap_analysis"])
+        if o.get("notes"):
+            parts.append(o["notes"])
+        if parts:
+            failure_texts.append(" ".join(parts))
+
+    if not failure_texts:
+        return []
+
+    combined = " ".join(failure_texts).lower()
+    reasons = []
+    reason_patterns = {
+        "超时": ["timeout", "超时", "too_long", "slow"],
+        "格式错误": ["format", "格式", "wording_differs", "structure"],
+        "依赖缺失": ["missing", "import", "依赖", "dependency", "incomplete"],
+        "文件未找到": ["not_found", "file", "文件", "path", "路径"],
+        "未执行": ["没执行", "没写代码", "只输出意图", "意图", "no_result", "empty"],
+        "输出截断": ["truncat", "cut_off", "partial", "截断"],
+        "逻辑错误": ["wrong", "incorrect", "error", "错误", "wrong_logic"],
+        "重复冗余": ["repeat", "redundan", "duplicat", "verbose"],
+    }
+    for reason, keywords in reason_patterns.items():
+        if any(kw in combined for kw in keywords):
+            reasons.append(reason)
+    return reasons
+
+
+def analyze_template_effectiveness(task_type: str, db_path: str | None = None) -> dict:
+    """Analyze template effectiveness for a given task_type.
+
+    Merges data from task_outcomes table.
+
+    Returns:
+        dict with keys: task_type, total, success, failure, success_rate,
+                        common_failures, suggestions
+    """
+    conn = _get_conn(db_path)
+    if conn is None:
+        return {"task_type": task_type, "total": 0, "success": 0, "failure": 0,
+                "success_rate": 0.0, "common_failures": [], "suggestions": []}
+
+    try:
+        rows = conn.execute(
+            "SELECT success, gap_analysis, notes FROM task_outcomes WHERE task_type = ? ORDER BY timestamp DESC",
+            (task_type,),
+        ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    finally:
+        conn.close()
+
+    outcomes = [dict(r) for r in rows]
+    total = len(outcomes)
+    success = sum(1 for o in outcomes if o["success"])
+    failure = total - success
+    success_rate = round(success / total, 4) if total > 0 else 0.0
+    common_failures = _extract_failure_reasons(outcomes)
+
+    suggestions = []
+    if total == 0:
+        suggestions.append("无历史数据，建议先积累任务执行记录")
+    else:
+        if success_rate < 0.7:
+            suggestions.append("考虑拆分为更小的子任务")
+        if "超时" in common_failures:
+            suggestions.append("增加约束：任务必须在5分钟内完成")
+        if "格式错误" in common_failures:
+            suggestions.append("增加约束：明确输出格式和示例")
+        if "依赖缺失" in common_failures:
+            suggestions.append("增加约束：列出所有需要的依赖")
+        if "未执行" in common_failures:
+            suggestions.append("在指令开头添加强制执行提示")
+        if "输出截断" in common_failures:
+            suggestions.append("增加约束：输出必须完整，不要截断")
+        if "逻辑错误" in common_failures:
+            suggestions.append("增加约束：完成后自行验证逻辑正确性")
+        if not common_failures and success_rate < 0.9 and total >= 3:
+            suggestions.append("失败记录缺少详细原因，建议补充 notes 字段")
+
+    return {
+        "task_type": task_type,
+        "total": total,
+        "success": success,
+        "failure": failure,
+        "success_rate": success_rate,
+        "common_failures": common_failures,
+        "suggestions": suggestions,
+    }
+
+
+def evolve_report(db_path: str | None = None) -> str:
+    """Generate a comprehensive evolution report for all task types."""
+    conn = _get_conn(db_path)
+    if conn is None:
+        return "# 模板进化报告\n\n暂无任务数据。"
+
+    try:
+        rows = conn.execute("SELECT DISTINCT task_type FROM task_outcomes").fetchall()
+        all_types = [r["task_type"] for r in rows]
+    except sqlite3.Error:
+        all_types = []
+    finally:
+        conn.close()
+
+    if not all_types:
+        return "# 模板进化报告\n\n暂无任务数据。"
+
+    lines = ["# 模板进化报告\n"]
+    lines.append("## 总览\n")
+    lines.append("| 任务类型 | 总数 | 成功 | 失败 | 成功率 |")
+    lines.append("|----------|------|------|------|--------|")
+
+    analyses = {}
+    for task_type in sorted(all_types):
+        a = analyze_template_effectiveness(task_type, db_path=db_path)
+        analyses[task_type] = a
+        rate_str = f"{a['success_rate']:.0%}" if a["total"] > 0 else "N/A"
+        lines.append(f"| {a['task_type']} | {a['total']} | {a['success']} | {a['failure']} | {rate_str} |")
+
+    lines.append("")
+    lines.append("## 详细分析\n")
+    for task_type in sorted(all_types):
+        a = analyses[task_type]
+        lines.append(f"### {task_type}\n")
+        if a["total"] == 0:
+            lines.append("暂无执行记录。\n")
+            continue
+        lines.append(f"- 执行次数: {a['total']} (成功 {a['success']}, 失败 {a['failure']})")
+        lines.append(f"- 成功率: {a['success_rate']:.0%}")
+        if a["common_failures"]:
+            lines.append(f"- 常见失败原因: {', '.join(a['common_failures'])}")
+        if a["suggestions"]:
+            lines.append("\n**改进建议:**\n")
+            for i, s in enumerate(a["suggestions"], 1):
+                lines.append(f"{i}. {s}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 # ─── CLI ───────────────────────────────────────────────────────────────────────
 
 def _cli():
@@ -299,6 +451,12 @@ def _cli():
     p_hist.add_argument("--type", default=None)
     p_hist.add_argument("--model", default=None)
     p_hist.add_argument("--limit", type=int, default=20)
+
+    # evolve (merged from template_evolution)
+    p_evolve_analyze = sub.add_parser("evolve-analyze")
+    p_evolve_analyze.add_argument("task_type")
+
+    sub.add_parser("evolve-report")
 
     args = parser.parse_args()
 
@@ -342,97 +500,20 @@ def _cli():
             status = "✓" if r["success"] else "✗"
             print(f"  {status} [{r['timestamp']}] {r['task_type']}/{r['model']} gap={r['gap_analysis'] or '-'}")
 
+    elif args.command == "evolve-analyze":
+        result = analyze_template_effectiveness(args.task_type)
+        import json
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+
+    elif args.command == "evolve-report":
+        print(evolve_report())
+
     else:
         parser.print_help()
 
 
-# ─── TESTS ─────────────────────────────────────────────────────────────────────
-
-def _run_tests():
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    db = tmp.name
-    tmp.close()
-
-    try:
-        # 1. Insert 10 mock records (mixed success/failure)
-        test_data = [
-            ("t1", "coding", "opus", "clean code", "messy code with missing imports", False, "missing imports"),
-            ("t2", "coding", "opus", "clean code", "incomplete output truncated", False, "truncated result"),
-            ("t3", "coding", "opus", "clean code", "clean code", True, None),
-            ("t4", "coding", "opus", "working tests", "tests fail with error", False, "wrong logic"),
-            ("t5", "coding", "opus", "complete module", "partial module missing functions", False, "incomplete"),
-            ("t6", "coding", "opus", "documented code", "code without docs", False, "missing documentation"),
-            ("t7", "summarize", "sonnet", "concise summary", "verbose rambling text", False, "too long"),
-            ("t8", "summarize", "sonnet", "concise summary", "concise summary", True, None),
-            ("t9", "summarize", "sonnet", "key points", "irrelevant extra details", False, "unexpected content"),
-            ("t10", "summarize", "sonnet", "3 bullet points", "5 paragraphs", False, "format wrong"),
-        ]
-
-        for tid, ttype, model, exp, act, success, notes in test_data:
-            rid = record_task_outcome(tid, ttype, model, exp, act, success, notes, db_path=db)
-            if rid is None:
-                print("[FAIL] Failed to insert test record", file=sys.stderr)
-                sys.exit(1)
-        print("  [PASS] Inserted 10 mock records")
-
-        # 2. Verify analyze_patterns finds low success rate groups
-        patterns = analyze_patterns(min_samples=5, db_path=db)
-        assert len(patterns) > 0, f"Expected patterns, got none"
-        coding_pattern = [p for p in patterns if p["task_type"] == "coding"]
-        assert len(coding_pattern) == 1, f"Expected 1 coding pattern, got {len(coding_pattern)}"
-        cp = coding_pattern[0]
-        assert cp["failure_rate"] > 0.5, f"Expected failure_rate > 0.5, got {cp['failure_rate']}"
-        assert cp["sample_count"] == 6, f"Expected 6 samples, got {cp['sample_count']}"
-        assert len(cp["recent_gaps"]) > 0, "Expected recent_gaps"
-        print(f"  [PASS] analyze_patterns found pattern: {cp['pattern']} (failure_rate={cp['failure_rate']})")
-
-        # 3. Verify generate_template_improvements returns non-empty
-        imps = generate_template_improvements("coding", db_path=db)
-        assert len(imps) > 0, f"Expected improvements, got none"
-        print(f"  [PASS] generate_template_improvements returned {len(imps)} suggestions")
-        for s in imps:
-            print(f"         - {s}")
-
-        # Also test summarize improvements
-        imps2 = generate_template_improvements("summarize", db_path=db)
-        assert len(imps2) > 0, f"Expected summarize improvements, got none"
-        print(f"  [PASS] summarize improvements: {len(imps2)} suggestions")
-
-        # 4. Verify history query and filtering
-        all_hist = get_task_history(db_path=db)
-        assert len(all_hist) == 10, f"Expected 10 records, got {len(all_hist)}"
-
-        coding_hist = get_task_history(task_type="coding", db_path=db)
-        assert len(coding_hist) == 6, f"Expected 6 coding records, got {len(coding_hist)}"
-
-        opus_hist = get_task_history(model="opus", db_path=db)
-        assert len(opus_hist) == 6, f"Expected 6 opus records, got {len(opus_hist)}"
-
-        limited = get_task_history(limit=3, db_path=db)
-        assert len(limited) == 3, f"Expected 3 records with limit, got {len(limited)}"
-
-        combined = get_task_history(task_type="summarize", model="sonnet", db_path=db)
-        assert len(combined) == 4, f"Expected 4 summarize/sonnet records, got {len(combined)}"
-        print("  [PASS] history query and filtering works correctly")
-
-        # 5. Verify gap_analysis is computed
-        for r in all_hist:
-            assert r["gap_analysis"] is not None, f"gap_analysis should not be None for record {r['task_id']}"
-        print("  [PASS] gap_analysis computed for all records")
-
-        # 6. Edge case: no failures for a type
-        empty_imps = generate_template_improvements("nonexistent", db_path=db)
-        assert empty_imps == [], f"Expected empty list, got {empty_imps}"
-        print("  [PASS] edge case: no failures returns empty list")
-
-        print("\nALL TESTS PASSED")
-
-    finally:
-        os.unlink(db)
-
-
 if __name__ == "__main__":
     if sys.argv[1:] == ["test"]:
-        _run_tests()
+        print("Tests moved to tests/test_feedback_loop.py — run: python3 tests/test_feedback_loop.py")
     else:
         _cli()

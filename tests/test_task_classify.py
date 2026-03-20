@@ -5,7 +5,7 @@ import sys
 import os
 
 # Ensure the module is importable
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "modules"))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from model_router import classify_task, recommend_for_description, TASK_KEYWORDS
 

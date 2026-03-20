@@ -10,7 +10,8 @@ import tempfile
 import unittest
 
 # 确保能 import 同目录模块
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "modules"))
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from todo_extractor import extract_todos_from_text
 
 

@@ -6,7 +6,8 @@ import sys
 import unittest
 from unittest.mock import patch, MagicMock
 
-sys.path.insert(0, os.path.dirname(__file__))
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from todo_extractor import extract_todos_from_text, extract_todos_with_llm
 
 
@@ -85,7 +86,7 @@ class TestLLMErrorHandling(unittest.TestCase):
         fake_resp.__enter__ = lambda s: s
         fake_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=fake_resp):
+        with patch("urllib.request.urlopen", return_value=fake_resp), patch.dict(os.environ, {"MINIMAX_API_KEY": "test_key"}):
             result = extract_todos_with_llm("测试文本")
         self.assertEqual(result, [])
 
@@ -104,7 +105,7 @@ class TestLLMErrorHandling(unittest.TestCase):
         fake_resp.__enter__ = lambda s: s
         fake_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=fake_resp):
+        with patch("urllib.request.urlopen", return_value=fake_resp), patch.dict(os.environ, {"MINIMAX_API_KEY": "test_key"}):
             result = extract_todos_with_llm("测试文本")
         self.assertEqual(result, [])
 
@@ -118,7 +119,7 @@ class TestLLMErrorHandling(unittest.TestCase):
         fake_resp.__enter__ = lambda s: s
         fake_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=fake_resp):
+        with patch("urllib.request.urlopen", return_value=fake_resp), patch.dict(os.environ, {"MINIMAX_API_KEY": "test_key"}):
             result = extract_todos_with_llm("今天要写周报")
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["title"], "写周报")
@@ -134,7 +135,7 @@ class TestLLMErrorHandling(unittest.TestCase):
         fake_resp.__enter__ = lambda s: s
         fake_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=fake_resp):
+        with patch("urllib.request.urlopen", return_value=fake_resp), patch.dict(os.environ, {"MINIMAX_API_KEY": "test_key"}):
             result = extract_todos_with_llm("下午要开会")
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["title"], "开会")
@@ -153,7 +154,7 @@ class TestLLMErrorHandling(unittest.TestCase):
         fake_resp.__enter__ = lambda s: s
         fake_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=fake_resp):
+        with patch("urllib.request.urlopen", return_value=fake_resp), patch.dict(os.environ, {"MINIMAX_API_KEY": "test_key"}):
             result = extract_todos_with_llm("周报要写一下")
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["title"], "写周报")

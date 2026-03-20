@@ -1,25 +1,24 @@
 #!/usr/bin/env python3
 """
-Unified Orchestrator for self-evolution modules.
+Self-evolution Scheduler & Orchestrator.
 
 Provides:
-- EventBus: simple pub/sub event system
 - Scheduler: heartbeat-based periodic task scheduling
-- Orchestrator: main entry point wiring all modules together
+- Orchestrator: unified entry point wiring all modules together
 
 CLI:
     python3 orchestrator.py heartbeat
-    python3 orchestrator.py event <event_name> [--model X] [--task-type Y] [--success true/false] [--description Z]
     python3 orchestrator.py status
+    python3 orchestrator.py event <task_type> <model> <success|fail> [description]
 
 Zero external dependencies. Pure stdlib.
 """
+from __future__ import annotations
 
 import argparse
 import json
 import os
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -29,52 +28,15 @@ BASE_DIR = Path(__file__).resolve().parent          # memory/structured/
 MEMORY_DIR = BASE_DIR.parent                        # memory/
 HEARTBEAT_STATE = MEMORY_DIR / "heartbeat-state.json"
 
-# ── Predefined Events ────────────────────────────────────────────────────────
-
-EVENTS = [
-    "agent.task.completed",
-    "agent.task.failed",
-    "conversation.message",
-    "heartbeat.tick",
-    "memory.updated",
-]
-
 # ── Schedule Config ──────────────────────────────────────────────────────────
 
 SCHEDULE = {
-    "feedback_analysis":   {"interval_hours": 24,  "fn": "run_feedback_analysis"},
+    "feedback_analysis":    {"interval_hours": 24,  "fn": "run_feedback_analysis"},
     "model_routing_update": {"interval_hours": 168, "fn": "run_model_routing"},
-    "memory_lru":          {"interval_hours": 168, "fn": "run_memory_lru"},
-    "skill_gap_scan":      {"interval_hours": 168, "fn": "run_skill_gap_scan"},
-    "decision_review":     {"interval_hours": 336, "fn": "run_decision_review"},
+    "memory_lru":           {"interval_hours": 168, "fn": "run_memory_lru"},
+    "skill_gap_scan":       {"interval_hours": 168, "fn": "run_skill_gap_scan"},
+    "decision_review":      {"interval_hours": 336, "fn": "run_decision_review"},
 }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# EventBus
-# ══════════════════════════════════════════════════════════════════════════════
-
-class EventBus:
-    """Simple synchronous event bus."""
-
-    def __init__(self):
-        self._handlers: dict[str, list[callable]] = {}
-
-    def on(self, event: str, handler: callable):
-        """Register a handler for an event."""
-        self._handlers.setdefault(event, []).append(handler)
-
-    def emit(self, event: str, **data) -> list:
-        """Emit an event, calling all registered handlers. Returns list of results."""
-        results = []
-        for handler in self._handlers.get(event, []):
-            hname = getattr(handler, "__name__", repr(handler))
-            try:
-                result = handler(**data)
-                results.append({"handler": hname, "ok": True, "result": result})
-            except Exception as e:
-                results.append({"handler": hname, "ok": False, "error": str(e)})
-        return results
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -136,10 +98,8 @@ class Scheduler:
                     elapsed_h = (datetime.now() - last_ts).total_seconds() / 3600
                     remaining_h = max(0, cfg["interval_hours"] - elapsed_h)
                 except (ValueError, TypeError):
-                    last_ts = None
                     remaining_h = 0
             else:
-                last_ts = None
                 remaining_h = 0
             info.append({
                 "task": name,
@@ -159,75 +119,12 @@ class Orchestrator:
     """Unified entry point that wires all self-evolution modules together."""
 
     def __init__(self, state_path: str | None = None):
-        self.bus = EventBus()
         self.scheduler = Scheduler(state_path)
-        self._register_handlers()
-
-    # ── handler registration ─────────────────────────────────────────────
-
-    def _register_handlers(self):
-        self.bus.on("agent.task.completed", self._handle_task_completed)
-        self.bus.on("agent.task.failed", self._handle_task_failed)
-        self.bus.on("conversation.message", self._handle_message)
-        self.bus.on("heartbeat.tick", self._handle_heartbeat)
-        self.bus.on("memory.updated", self._handle_memory_updated)
-
-    # ── internal event handlers ──────────────────────────────────────────
-
-    def _handle_task_completed(self, task_type="general", model="unknown",
-                                description="", **_kw):
-        return self._record_task(task_type, model, True, description)
-
-    def _handle_task_failed(self, task_type="general", model="unknown",
-                             description="", **_kw):
-        return self._record_task(task_type, model, False, description)
-
-    def _record_task(self, task_type, model, success, description):
-        results = {}
-        # 1) record_agent_stat
-        try:
-            from record_agent_stat import record as stat_record
-            stat_record(model, task_type, success, description)
-            results["record_agent_stat"] = "ok"
-        except Exception as e:
-            results["record_agent_stat"] = f"error: {e}"
-
-        # 2) feedback_loop.record_task_outcome
-        try:
-            from feedback_loop import record_task_outcome
-            record_task_outcome(
-                task_id=None,
-                task_type=task_type,
-                model=model,
-                expected=None,
-                actual=description or None,
-                success=success,
-                notes=description or None,
-            )
-            results["feedback_loop"] = "ok"
-        except Exception as e:
-            results["feedback_loop"] = f"error: {e}"
-
-        return results
-
-    def _handle_message(self, text="", **_kw):
-        try:
-            from todo_extractor import extract_todos_from_text
-            todos = extract_todos_from_text(text)
-            return {"todos": todos}
-        except Exception as e:
-            return {"todos": [], "error": str(e)}
-
-    def _handle_heartbeat(self, **_kw):
-        return self._run_scheduled_tasks()
-
-    def _handle_memory_updated(self, **_kw):
-        # Placeholder for future embedding refresh
-        return {"embedding_update": "skipped (no embedding engine configured)"}
 
     # ── scheduled task runners ───────────────────────────────────────────
 
-    def _run_scheduled_tasks(self) -> dict:
+    def run_scheduled_tasks(self) -> dict:
+        """Run all due scheduled tasks. Returns dict of task_name -> result."""
         executed = {}
         for name, cfg in SCHEDULE.items():
             if self.scheduler.should_run(name, cfg["interval_hours"]):
@@ -275,56 +172,42 @@ class Orchestrator:
     # ── public API ───────────────────────────────────────────────────────
 
     def on_agent_completed(self, task_type, model, success, description=""):
-        """Called when a sub-agent finishes."""
-        event = "agent.task.completed" if success else "agent.task.failed"
-        return self.bus.emit(event, task_type=task_type, model=model,
-                             description=description)
-
-    def on_message(self, text: str) -> list:
-        """Called on incoming conversation message. Returns extracted todos."""
-        results = self.bus.emit("conversation.message", text=text)
-        for r in results:
-            if r.get("ok") and isinstance(r.get("result"), dict):
-                return r["result"].get("todos", [])
-        return []
+        """Called when a sub-agent finishes. Records to both stats and feedback."""
+        results = {}
+        try:
+            from record_agent_stat import record as stat_record
+            stat_record(model, task_type, success, description)
+            results["record_agent_stat"] = "ok"
+        except Exception as e:
+            results["record_agent_stat"] = f"error: {e}"
+        return results
 
     def on_heartbeat(self) -> dict:
         """Called on heartbeat tick. Returns dict of executed tasks."""
-        results = self.bus.emit("heartbeat.tick")
-        for r in results:
-            if r.get("ok") and isinstance(r.get("result"), dict):
-                return r["result"]
-        return {}
+        return self.run_scheduled_tasks()
 
     def recommend_model(self, task_description: str) -> dict:
         """Recommend a model for the given task description."""
         from model_router import recommend_for_description
         return recommend_for_description(task_description)
 
-    def get_template(self, task_type: str, **kwargs) -> str:
-        """Get a sub-agent prompt template."""
-        from template_manager import TemplateManager
-        mgr = TemplateManager()
-        return mgr.get_template(task_type, **kwargs)
-
-    def search_memory(self, query: str, mode="hybrid") -> str:
+    def search_memory(self, query: str) -> str:
         """Search the memory database."""
         from memory_db import search_with_context
         return search_with_context(query)
 
     def status(self) -> dict:
-        """Return overall status: module health + schedule info."""
+        """Return overall status: module health + schedule info + key metrics."""
         modules = {}
         module_checks = {
-            "memory_db":       lambda: __import__("memory_db"),
-            "model_router":    lambda: __import__("model_router"),
-            "feedback_loop":   lambda: __import__("feedback_loop"),
-            "memory_lru":      lambda: __import__("memory_lru"),
-            "skill_discovery": lambda: __import__("skill_discovery"),
-            "decision_review": lambda: __import__("decision_review"),
+            "memory_db":         lambda: __import__("memory_db"),
+            "model_router":      lambda: __import__("model_router"),
+            "feedback_loop":     lambda: __import__("feedback_loop"),
+            "memory_lru":        lambda: __import__("memory_lru"),
+            "skill_discovery":   lambda: __import__("skill_discovery"),
+            "decision_review":   lambda: __import__("decision_review"),
             "record_agent_stat": lambda: __import__("record_agent_stat"),
-            "todo_extractor":  lambda: __import__("todo_extractor"),
-            "template_manager": lambda: __import__("template_manager"),
+            "template_manager":  lambda: __import__("template_manager"),
         }
         for name, check in module_checks.items():
             try:
@@ -333,13 +216,64 @@ class Orchestrator:
             except Exception as e:
                 modules[name] = f"error: {e}"
 
+        # Key metrics
+        metrics = {}
+        try:
+            from memory_db import stats as db_stats
+            s = db_stats()
+            metrics["observations"] = s.get("observations", 0)
+            metrics["decisions"] = s.get("decisions", 0)
+            metrics["summaries"] = s.get("summaries", 0)
+        except Exception:
+            metrics["db"] = "unavailable"
+
+        try:
+            from feedback_loop import analyze_patterns, evolve_report, analyze_template_effectiveness
+            patterns = analyze_patterns(min_samples=3)
+            metrics["problematic_patterns"] = len(patterns)
+            if patterns:
+                worst = max(patterns, key=lambda p: p["failure_rate"])
+                metrics["worst_pattern"] = f"{worst['task_type']}/{worst['model']} ({worst['failure_rate']:.0%} fail)"
+        except Exception:
+            metrics["feedback"] = "unavailable"
+
+        try:
+            from decision_review import review_stats
+            rs = review_stats()
+            metrics["decisions_reviewed"] = rs.get("reviewed", 0)
+            metrics["decisions_pending"] = rs.get("unreviewed", 0)
+            if rs.get("regret_rate") is not None:
+                metrics["regret_rate"] = f"{rs['regret_rate']:.0%}"
+        except Exception:
+            pass
+
+        try:
+            from memory_lru import get_hot_memories, get_cold_memories
+            metrics["hot_memories"] = len(get_hot_memories(limit=100))
+            metrics["cold_memories"] = len(get_cold_memories(days_unused=30, limit=100))
+        except Exception:
+            pass
+
+        try:
+            from skill_discovery import generate_report
+            # Just count gaps, don't generate full report
+            from skill_discovery import analyze_capability_gaps, parse_failures, _load_bugfix_observations, FAILURES_PATH, STATS_PATH
+            from db_common import DB_PATH
+            import json
+            failures = parse_failures(str(FAILURES_PATH)) if FAILURES_PATH.exists() else []
+            stats_data = json.loads(STATS_PATH.read_text(encoding="utf-8")) if STATS_PATH.exists() else {}
+            bugfix_obs = _load_bugfix_observations(str(DB_PATH))
+            gaps = analyze_capability_gaps(failures, stats_data, bugfix_obs)
+            high_gaps = [g for g in gaps if g["severity"] == "high"]
+            metrics["skill_gaps_high"] = len(high_gaps)
+            metrics["skill_gaps_total"] = len(gaps)
+        except Exception:
+            pass
+
         return {
             "modules": modules,
+            "metrics": metrics,
             "schedule": self.scheduler.next_run_info(),
-            "events_registered": {
-                evt: len(self.bus._handlers.get(evt, []))
-                for evt in EVENTS
-            },
         }
 
 
@@ -355,18 +289,14 @@ def cli():
     parser = argparse.ArgumentParser(description="Self-evolution orchestrator")
     sub = parser.add_subparsers(dest="command")
 
-    # heartbeat
     sub.add_parser("heartbeat", help="Simulate a heartbeat tick")
 
-    # event
-    ev = sub.add_parser("event", help="Emit an event")
-    ev.add_argument("event_name", help="Event name, e.g. agent.task.completed")
-    ev.add_argument("--model", default="unknown")
-    ev.add_argument("--task-type", default="general")
-    ev.add_argument("--success", default="true")
-    ev.add_argument("--description", default="")
+    ev = sub.add_parser("event", help="Record a task completion event")
+    ev.add_argument("task_type", help="Task type, e.g. coding")
+    ev.add_argument("model", help="Model name, e.g. opus")
+    ev.add_argument("result", choices=["success", "fail"], help="Task result")
+    ev.add_argument("--description", default="", help="Optional description")
 
-    # status
     sub.add_parser("status", help="Show module status and schedule")
 
     args = parser.parse_args()
@@ -383,22 +313,14 @@ def cli():
         _print_json(result)
 
     elif args.command == "event":
-        success = args.success.lower() in ("true", "1", "yes")
-        print(f"📡 Emitting {args.event_name}...")
-        if args.event_name in ("agent.task.completed", "agent.task.failed"):
-            result = orch.on_agent_completed(
-                task_type=args.task_type,
-                model=args.model,
-                success=(args.event_name == "agent.task.completed") and success,
-                description=args.description,
-            )
-            _print_json(result)
-        elif args.event_name == "conversation.message":
-            todos = orch.on_message(args.description or "test message")
-            _print_json(todos)
-        else:
-            result = orch.bus.emit(args.event_name)
-            _print_json(result)
+        success = args.result == "success"
+        result = orch.on_agent_completed(
+            task_type=args.task_type,
+            model=args.model,
+            success=success,
+            description=args.description,
+        )
+        _print_json(result)
 
     elif args.command == "status":
         status = orch.status()
@@ -406,15 +328,30 @@ def cli():
         for mod, st in status["modules"].items():
             icon = "✅" if st == "ok" else "❌"
             print(f"  {icon} {mod}: {st}")
+
+        print("\n═══ Key Metrics ═══")
+        m = status.get("metrics", {})
+        if "observations" in m:
+            print(f"  📊 Memory DB: {m['observations']} observations, {m['decisions']} decisions, {m['summaries']} summaries")
+        if "problematic_patterns" in m:
+            print(f"  ⚠️  Problematic patterns: {m['problematic_patterns']}")
+            if m.get("worst_pattern"):
+                print(f"     Worst: {m['worst_pattern']}")
+        if "decisions_pending" in m:
+            print(f"  📋 Decision reviews: {m['decisions_reviewed']} done, {m['decisions_pending']} pending")
+            if m.get("regret_rate"):
+                print(f"     Regret rate: {m['regret_rate']}")
+        if "hot_memories" in m:
+            print(f"  🔥 Hot memories: {m['hot_memories']} | ❄️  Cold: {m['cold_memories']}")
+        if "skill_gaps_total" in m:
+            print(f"  🔍 Skill gaps: {m['skill_gaps_high']} high / {m['skill_gaps_total']} total")
+
         print("\n═══ Schedule ═══")
         for s in status["schedule"]:
             icon = "🔴" if s["due"] else "🟢"
             last = s["last_run"][:16] if s["last_run"] else "never"
             print(f"  {icon} {s['task']}: every {s['interval_hours']}h | "
                   f"last: {last} | remaining: {s['remaining_hours']}h")
-        print(f"\n═══ Event Handlers ═══")
-        for evt, count in status["events_registered"].items():
-            print(f"  📡 {evt}: {count} handler(s)")
 
 
 if __name__ == "__main__":

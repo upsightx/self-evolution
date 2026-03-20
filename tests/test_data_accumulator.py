@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 
 # 确保能导入
 import sys
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from data_accumulator import (
     scan_daily_logs,

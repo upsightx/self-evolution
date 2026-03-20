@@ -13,6 +13,8 @@ CLI:
     python3 data_accumulator.py backfill          # 回填（dry_run）
     python3 data_accumulator.py backfill --apply  # 实际回填
 """
+from __future__ import annotations
+
 import json
 import os
 import re
