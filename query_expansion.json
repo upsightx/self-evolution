@@ -1,0 +1,23 @@
+{
+  "query_expansion": {
+    "爬虫": ["web scraper", "数据采集", "抓取", "scraping", "crawl"],
+    "融资": ["funding", "投资", "投资方", "轮次", "capital"],
+    "模型": ["model", "llm", "大模型", "ai", "语言模型"],
+    "部署": ["deploy", "docker", "服务器", "上线", "production"],
+    "测试": ["test", "验证", "qa", "单元测试"],
+    "记忆": ["memory", "观察", "经验", "lesson"],
+    "决策": ["decision", "选择", "方案", "strategy"],
+    "代码": ["code", "coding", "编程", "python", "javascript"],
+    "搜索": ["search", "retrieval", "检索", "查找", "query"],
+    "子agent": ["subagent", "子代理", "agent", "助手"],
+    "飞书": ["feishu", "lark", "日历", "文档", "云文档"],
+    "github": ["git", "仓库", "repo", "代码托管", "trending"],
+    "性能": ["performance", "优化", "延迟", "速度", "benchmark"],
+    "安全": ["security", "漏洞", "注入", "权限", "加密"],
+    "数据库": ["database", "sqlite", "sql", "存储", "查询"],
+    "api": ["接口", "endpoint", "http", "rest", "请求"],
+    "错误": ["error", "bug", "异常", "失败", "crash", "报错"],
+    "重构": ["refactor", "重写", "优化", "架构", "拆分"]
+  },
+  "informal_strip": ["上次", "之前", "那个", "这个", "我之前", "刚才", "以前"]
+}

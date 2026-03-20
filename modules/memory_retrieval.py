@@ -9,46 +9,34 @@ Memory Retrieval — 自我进化记忆系统的检索层。
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from db_common import DB_PATH
 
 
 # ============ Query Rewriting ============
 
-# 关键词 → 同义表达映射（用手写规则，不用LLM调用）
-_QUERY_EXPANSION = {
-    "爬虫": ["web scraper", "数据采集", "抓取", "scraping", "crawl"],
-    "融资": ["funding", "投资", "投资方", "轮次", "capital"],
-    "模型": ["model", "llm", "大模型", "ai", "语言模型"],
-    "部署": ["deploy", "docker", "服务器", "上线", "production"],
-    "测试": ["test", "测试", "验证", "qa", "验证"],
-    "记忆": ["memory", "记忆", "观察", "经验", "lesson"],
-    "决策": ["decision", "决策", "选择", "方案", "strategy"],
-    "代码": ["code", "coding", "编程", "python", "javascript"],
-    "搜索": ["search", "retrieval", "检索", "查找", "query"],
-    "子agent": ["subagent", "子代理", "agent", "助手", "task"],
-    "飞书": ["feishu", "lark", "日历", "文档", "云文档"],
-    "github": ["git", "仓库", "repo", "代码托管", "trending"],
-}
+_CONFIG_PATH = Path(__file__).parent / "query_expansion.json"
 
-# 口语化表达 → 标准表达
-_INFORMAL_MAP = {
-    r"上次": "",
-    r"之前": "",
-    r"那个": "",
-    r"这个": "",
-    r"我之前": "",
-    r"刚才": "",
-}
+
+def _load_expansion_config() -> tuple[dict, list]:
+    """Load query expansion config from JSON file. Falls back to empty if missing."""
+    try:
+        with open(_CONFIG_PATH, encoding="utf-8") as f:
+            cfg = json.load(f)
+        return cfg.get("query_expansion", {}), cfg.get("informal_strip", [])
+    except Exception:
+        return {}, []
 
 
 def rewrite_query(query: str) -> list[str]:
     """将用户查询改写为多个检索角度。
 
-    用规则扩展词汇，不调用LLM。
+    从 query_expansion.json 加载配置，用规则扩展词汇，不调用LLM。
     例如："上次那个爬虫" → ["爬虫", "web scraper", "数据采集", "抓取"]
 
     Returns:
@@ -57,17 +45,19 @@ def rewrite_query(query: str) -> list[str]:
     if not query or len(query.strip()) < 2:
         return [query] if query else []
 
+    expansion_map, informal_list = _load_expansion_config()
+
     # 1. 去除口语化前缀
     cleaned = query
-    for pattern, replacement in _INFORMAL_MAP.items():
-        cleaned = re.sub(pattern, replacement, cleaned)
+    for prefix in informal_list:
+        cleaned = re.sub(re.escape(prefix), "", cleaned)
     cleaned = cleaned.strip()
 
     # 2. 收集所有表达
     expressions = {cleaned}
     query_lower = query.lower()
 
-    for keyword, synonyms in _QUERY_EXPANSION.items():
+    for keyword, synonyms in expansion_map.items():
         if keyword in query_lower:
             expressions.add(keyword)
             for syn in synonyms:
