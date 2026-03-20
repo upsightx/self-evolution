@@ -20,6 +20,16 @@ from db_common import DB_PATH, get_db as _get_db_common
 
 SUPPORTED_TABLES = ("observations", "decisions")
 
+# Safe table name mapping — prevents SQL injection via f-string table names
+_SAFE_TABLE = {t: t for t in SUPPORTED_TABLES}
+
+
+def _safe_table(table: str) -> str:
+    """Validate and return safe table name. Raises ValueError if invalid."""
+    if table not in _SAFE_TABLE:
+        raise ValueError(f"Invalid table: {table}. Valid: {SUPPORTED_TABLES}")
+    return _SAFE_TABLE[table]
+
 
 def _get_db(db_path=None):
     if db_path:
@@ -34,9 +44,10 @@ def ensure_columns(db_path=None):
     """Idempotently add access_count and last_accessed columns to both tables."""
     db = _get_db(db_path)
     for table in SUPPORTED_TABLES:
+        tbl = _safe_table(table)
         for col, typedef in [("access_count", "INTEGER DEFAULT 0"), ("last_accessed", "TEXT")]:
             try:
-                db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typedef}")
+                db.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {typedef}")
             except sqlite3.OperationalError as e:
                 if "duplicate column" not in str(e).lower():
                     raise
@@ -46,13 +57,12 @@ def ensure_columns(db_path=None):
 
 def record_access(record_id, table="observations", db_path=None):
     """Record one access, incrementing access_count and updating last_accessed."""
-    if table not in SUPPORTED_TABLES:
-        raise ValueError(f"Invalid table: {table}. Valid: {SUPPORTED_TABLES}")
+    tbl = _safe_table(table)
     db = _get_db(db_path)
     ensure_columns(db_path)
     now = datetime.now().isoformat()
     cur = db.execute(
-        f"UPDATE {table} SET access_count = COALESCE(access_count, 0) + 1, last_accessed = ? WHERE id = ?",
+        f"UPDATE {tbl} SET access_count = COALESCE(access_count, 0) + 1, last_accessed = ? WHERE id = ?",
         (now, record_id),
     )
     db.commit()
@@ -67,11 +77,12 @@ def get_hot_memories(limit=20, db_path=None):
     ensure_columns(db_path)
     results = []
     for table in SUPPORTED_TABLES:
+        tbl = _safe_table(table)
         title_col = "title"
         rows = db.execute(
-            f"SELECT id, '{table}' as tbl, {title_col}, "
+            f"SELECT id, '{tbl}' as tbl, {title_col}, "
             f"COALESCE(access_count, 0) as access_count, last_accessed, created_at "
-            f"FROM {table} WHERE COALESCE(access_count, 0) > 0 "
+            f"FROM {tbl} WHERE COALESCE(access_count, 0) > 0 "
             f"ORDER BY access_count DESC LIMIT ?",
             (limit,),
         ).fetchall()
@@ -97,10 +108,11 @@ def get_cold_memories(days_unused=30, limit=50, db_path=None):
     recent_cutoff = (datetime.now() - timedelta(days=7)).isoformat()
     results = []
     for table in SUPPORTED_TABLES:
+        tbl = _safe_table(table)
         rows = db.execute(
-            f"SELECT id, '{table}' as tbl, title, "
+            f"SELECT id, '{tbl}' as tbl, title, "
             f"COALESCE(access_count, 0) as access_count, last_accessed, created_at "
-            f"FROM {table} "
+            f"FROM {tbl} "
             f"WHERE (last_accessed IS NULL OR last_accessed < ?) "
             f"AND created_at < ? "
             f"ORDER BY created_at ASC LIMIT ?",
@@ -141,9 +153,10 @@ def memory_heatmap(db_path=None):
     # by_month: sum access_count per month across both tables
     by_month = {}
     for table in SUPPORTED_TABLES:
+        tbl = _safe_table(table)
         for r in db.execute(
             f"SELECT SUBSTR(last_accessed, 1, 7) as month, SUM(COALESCE(access_count, 0)) as total "
-            f"FROM {table} WHERE last_accessed IS NOT NULL GROUP BY month"
+            f"FROM {tbl} WHERE last_accessed IS NOT NULL GROUP BY month"
         ).fetchall():
             m = r["month"]
             if m:
