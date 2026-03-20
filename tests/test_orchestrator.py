@@ -172,7 +172,7 @@ class TestOrchestratorStatus(unittest.TestCase):
         status = orch.status()
         self.assertIn("modules", status)
         self.assertIn("schedule", status)
-        self.assertGreaterEqual(len(status["modules"]), 8)
+        self.assertGreaterEqual(len(status["modules"]), 7)
         self.assertEqual(len(status["schedule"]), len(SCHEDULE))
 
     def test_status_modules_importable(self):

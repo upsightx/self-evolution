@@ -370,12 +370,12 @@ def semantic_search(query, limit=10):
     return _search(query, limit)
 
 def search_with_context(query, max_chars=6000, top_per_group=3, mode="keyword"):
-    from memory_context import search_with_context as _swc
-    return _swc(query, max_chars, top_per_group, mode)
+    from memory_service import recall
+    return recall(query, top_k=top_per_group)
 
 def search_with_metadata(query, max_chars=6000, top_per_group=3):
-    from memory_context import search_with_metadata as _swm
-    return _swm(query, max_chars, top_per_group)
+    from memory_service import recall
+    return recall(query, top_k=top_per_group)
 
 
 # ============ CLI ============

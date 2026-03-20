@@ -33,13 +33,8 @@ HEARTBEAT_STATE = MEMORY_DIR / "heartbeat-state.json"
 SCHEDULE = {
     "feedback_analysis":    {"interval_hours": 24,  "fn": "run_feedback_analysis"},
     "auto_memory":          {"interval_hours": 24,  "fn": "run_auto_memory"},
-    "todo_scan":            {"interval_hours": 24,  "fn": "run_todo_scan"},
-    "decision_reminder":    {"interval_hours": 72,  "fn": "run_decision_reminder"},
     "model_routing_update": {"interval_hours": 168, "fn": "run_model_routing"},
     "memory_lru":           {"interval_hours": 168, "fn": "run_memory_lru"},
-    "skill_gap_scan":       {"interval_hours": 168, "fn": "run_skill_gap_scan"},
-    "skill_gap_alert":      {"interval_hours": 168, "fn": "run_skill_gap_alert"},
-    "decision_review":      {"interval_hours": 336, "fn": "run_decision_review"},
 }
 
 
@@ -162,17 +157,6 @@ class Orchestrator:
         suggestions = suggest_archive()
         return {"archive_suggestions": suggestions}
 
-    def run_skill_gap_scan(self):
-        from skill_discovery import generate_report
-        report = generate_report()
-        return {"report_length": len(report) if report else 0}
-
-    def run_decision_review(self):
-        from decision_review import get_unreviewed_decisions, generate_review_report
-        pending = get_unreviewed_decisions()
-        report = generate_review_report()
-        return {"pending_reviews": len(pending), "report_length": len(report) if report else 0}
-
     def run_auto_memory(self):
         """Read today's daily log and auto-extract memories into memory.db."""
         today = datetime.now().strftime("%Y-%m-%d")
@@ -185,83 +169,6 @@ class Orchestrator:
         from auto_memory import auto_save
         result = auto_save(text)
         return {"status": "ok", "saved": result.get("saved", 0), "skipped_dupes": result.get("skipped", 0)}
-
-    def run_todo_scan(self):
-        """Read today's daily log and extract todos into pending-tasks.md.
-        Only high-confidence todos (>= 0.8) are extracted from logs,
-        since logs contain descriptive text, not conversational commands."""
-        today = datetime.now().strftime("%Y-%m-%d")
-        daily_log = MEMORY_DIR / f"{today}.md"
-        if not daily_log.exists():
-            return {"status": "skipped", "reason": "no daily log for today"}
-        text = daily_log.read_text(encoding="utf-8")
-        from todo_extractor import extract_todos_from_text
-        pending_path = MEMORY_DIR / "pending-tasks.md"
-        todos = extract_todos_from_text(text, pending_tasks_path=str(pending_path))
-        # Filter: only high-confidence from logs (logs != conversation)
-        todos = [t for t in todos if t.get("confidence", 0) >= 0.8]
-        if not todos:
-            return {"status": "ok", "new_todos": 0}
-        # Append new todos to pending-tasks.md
-        existing = pending_path.read_text(encoding="utf-8") if pending_path.exists() else ""
-        new_lines = []
-        for t in todos:
-            line = f"- [ ] {t['title']}"
-            if t.get("time_hint"):
-                line += f" ({t['time_hint']})"
-            if line not in existing:
-                new_lines.append(line)
-        if new_lines:
-            with open(pending_path, "a", encoding="utf-8") as f:
-                if existing and not existing.endswith("\n"):
-                    f.write("\n")
-                if not existing:
-                    f.write(f"# 待办事项\n\n")
-                f.write(f"\n## {today}\n")
-                f.write("\n".join(new_lines) + "\n")
-        return {"status": "ok", "new_todos": len(new_lines)}
-
-    def run_decision_reminder(self):
-        """Check for decisions due for review and return reminder list."""
-        from decision_review import get_unreviewed_decisions
-        pending = get_unreviewed_decisions(min_age_days=7, limit=5)
-        if not pending:
-            return {"status": "ok", "pending": 0, "reminders": []}
-        reminders = []
-        for d in pending:
-            reminders.append({
-                "id": d.get("id"),
-                "title": d.get("title", ""),
-                "age_days": d.get("age_days", 0),
-            })
-        return {"status": "ok", "pending": len(reminders), "reminders": reminders}
-
-    def run_skill_gap_alert(self):
-        """Check for high-severity skill gaps and append to HEARTBEAT.md."""
-        from skill_discovery import analyze_capability_gaps, parse_failures, _load_bugfix_observations, FAILURES_PATH, STATS_PATH
-        from db_common import DB_PATH
-        import json as _json
-        failures = parse_failures(str(FAILURES_PATH)) if FAILURES_PATH.exists() else []
-        stats_data = _json.loads(STATS_PATH.read_text(encoding="utf-8")) if STATS_PATH.exists() else {}
-        bugfix_obs = _load_bugfix_observations(str(DB_PATH))
-        gaps = analyze_capability_gaps(failures, stats_data, bugfix_obs)
-        high_gaps = [g for g in gaps if g["severity"] == "high"]
-        if not high_gaps:
-            return {"status": "ok", "high_gaps": 0}
-        # Append alert to HEARTBEAT.md
-        heartbeat_path = MEMORY_DIR.parent / "HEARTBEAT.md"
-        if heartbeat_path.exists():
-            existing = heartbeat_path.read_text(encoding="utf-8")
-            marker = "## 能力缺口提醒（自动生成）"
-            if marker in existing:
-                return {"status": "ok", "high_gaps": len(high_gaps), "action": "already_alerted"}
-            alert_lines = [f"\n{marker}\n"]
-            for g in high_gaps[:3]:
-                alert_lines.append(f"- **{g['gap']}** (severity: {g['severity']}) — {g.get('evidence', '')}")
-            alert_lines.append("- 考虑从 ClawHub/SkillHub 搜索对应 skill\n")
-            with open(heartbeat_path, "a", encoding="utf-8") as f:
-                f.write("\n".join(alert_lines))
-        return {"status": "ok", "high_gaps": len(high_gaps), "action": "alerted"}
 
     # ── public API ───────────────────────────────────────────────────────
 
@@ -295,13 +202,13 @@ class Orchestrator:
         modules = {}
         module_checks = {
             "memory_db":         lambda: __import__("memory_db"),
+            "memory_store":      lambda: __import__("memory_store"),
+            "memory_retrieval":  lambda: __import__("memory_retrieval"),
+            "memory_service":    lambda: __import__("memory_service"),
             "model_router":      lambda: __import__("model_router"),
             "feedback_loop":     lambda: __import__("feedback_loop"),
             "memory_lru":        lambda: __import__("memory_lru"),
-            "skill_discovery":   lambda: __import__("skill_discovery"),
-            "decision_review":   lambda: __import__("decision_review"),
             "record_agent_stat": lambda: __import__("record_agent_stat"),
-            "template_manager":  lambda: __import__("template_manager"),
         }
         for name, check in module_checks.items():
             try:
@@ -322,7 +229,7 @@ class Orchestrator:
             metrics["db"] = "unavailable"
 
         try:
-            from feedback_loop import analyze_patterns, evolve_report, analyze_template_effectiveness
+            from feedback_loop import analyze_patterns
             patterns = analyze_patterns(min_samples=3)
             metrics["problematic_patterns"] = len(patterns)
             if patterns:
@@ -332,35 +239,9 @@ class Orchestrator:
             metrics["feedback"] = "unavailable"
 
         try:
-            from decision_review import review_stats
-            rs = review_stats()
-            metrics["decisions_reviewed"] = rs.get("reviewed", 0)
-            metrics["decisions_pending"] = rs.get("unreviewed", 0)
-            if rs.get("regret_rate") is not None:
-                metrics["regret_rate"] = f"{rs['regret_rate']:.0%}"
-        except Exception:
-            pass
-
-        try:
             from memory_lru import get_hot_memories, get_cold_memories
             metrics["hot_memories"] = len(get_hot_memories(limit=100))
             metrics["cold_memories"] = len(get_cold_memories(days_unused=30, limit=100))
-        except Exception:
-            pass
-
-        try:
-            from skill_discovery import generate_report
-            # Just count gaps, don't generate full report
-            from skill_discovery import analyze_capability_gaps, parse_failures, _load_bugfix_observations, FAILURES_PATH, STATS_PATH
-            from db_common import DB_PATH
-            import json
-            failures = parse_failures(str(FAILURES_PATH)) if FAILURES_PATH.exists() else []
-            stats_data = json.loads(STATS_PATH.read_text(encoding="utf-8")) if STATS_PATH.exists() else {}
-            bugfix_obs = _load_bugfix_observations(str(DB_PATH))
-            gaps = analyze_capability_gaps(failures, stats_data, bugfix_obs)
-            high_gaps = [g for g in gaps if g["severity"] == "high"]
-            metrics["skill_gaps_high"] = len(high_gaps)
-            metrics["skill_gaps_total"] = len(gaps)
         except Exception:
             pass
 
@@ -431,14 +312,8 @@ def cli():
             print(f"  ⚠️  Problematic patterns: {m['problematic_patterns']}")
             if m.get("worst_pattern"):
                 print(f"     Worst: {m['worst_pattern']}")
-        if "decisions_pending" in m:
-            print(f"  📋 Decision reviews: {m['decisions_reviewed']} done, {m['decisions_pending']} pending")
-            if m.get("regret_rate"):
-                print(f"     Regret rate: {m['regret_rate']}")
         if "hot_memories" in m:
             print(f"  🔥 Hot memories: {m['hot_memories']} | ❄️  Cold: {m['cold_memories']}")
-        if "skill_gaps_total" in m:
-            print(f"  🔍 Skill gaps: {m['skill_gaps_high']} high / {m['skill_gaps_total']} total")
 
         print("\n═══ Schedule ═══")
         for s in status["schedule"]:
