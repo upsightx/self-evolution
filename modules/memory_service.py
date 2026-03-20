@@ -1,0 +1,340 @@
+#!/usr/bin/env python3
+"""
+Memory Service — 自我进化记忆系统的统一入口。
+
+职责：
+- remember(): 写入记忆 + 自动提取标签
+- recall(): 检索记忆 + 构建上下文
+- reflect(): 定期分析，生成洞察
+
+所有外部调用方通过这个模块访问记忆系统，不需要知道内部细节。
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+from datetime import datetime
+
+from db_common import DB_PATH
+
+
+# ============ Tag Extraction ============
+
+TASK_TYPE_KEYWORDS = {
+    "coding": ["python", "javascript", "爬虫", "api", "docker", "git", "代码", "编程", "脚本"],
+    "research": ["融资", "投资", "论文", "调研", "分析", "market", "报告"],
+    "file_ops": ["文件", "上传", "下载", "复制", "移动", "删除", "file"],
+    "reasoning": ["决策", "判断", "评估", "比较", "分析", "权衡"],
+    "general": [],  # fallback
+}
+
+MODEL_KEYWORDS = {
+    "kimi": ["kimi", "moonshot", "月之暗面"],
+    "minimax": ["minimax", "智谱", "glm"],
+    "opus": ["opus", "claude"],
+    "sonnet": ["sonnet"],
+    "gpt": ["gpt", "chatgpt", "openai"],
+}
+
+TECH_KEYWORDS = [
+    "python", "javascript", "typescript", "rust", "go",
+    "sqlite", "fastapi", "docker", "kubernetes",
+    "github", "feishu", "lark", "飞书",
+    "api", "http", "websocket", "grpc",
+    "embedding", "vector", "rag", "llm", "bge",
+    "36kr", "trending", "hackernews",
+    "subagent", "agent", "workflow",
+    "skill", "tool", "memory",
+]
+
+
+def extract_tags(content: str, task_type: str | None = None) -> list[str]:
+    """从内容中自动提取标签（规则匹配，不需要LLM）。
+
+    Returns:
+        list of tag strings, deduped, max 10
+    """
+    tags = []
+    content_lower = content.lower()
+
+    if task_type and task_type in TASK_TYPE_KEYWORDS:
+        tags.append(task_type)
+
+    # Match task type
+    for tt, kws in TASK_TYPE_KEYWORDS.items():
+        if tt == "general":
+            continue
+        if any(kw in content_lower for kw in kws):
+            tags.append(tt)
+
+    # Match model
+    for model, kws in MODEL_KEYWORDS.items():
+        if any(kw in content_lower for kw in kws):
+            tags.append(model)
+
+    # Match tech keywords
+    for kw in TECH_KEYWORDS:
+        if kw in content_lower:
+            tags.append(kw)
+
+    return list(set(tags))[:10]
+
+
+# ============ Session-Level Working Memory ============
+
+class SessionMemory:
+    """单次会话的短期记忆，不写入长期存储。
+
+    用于记住当前会话内的关键信息，不需要检索就有用。
+    """
+    def __init__(self):
+        self.recent_decisions = []   # [(id, title, decision)]
+        self.current_task = None      # 当前任务描述
+        self.user_preferences = {}    # 用户偏好
+        self.pending_todos = []       # 本会话产生的待办
+
+    def add_decision(self, title: str, decision: str, decision_id: int | None = None):
+        self.recent_decisions.append((decision_id, title, decision))
+        if len(self.recent_decisions) > 10:
+            self.recent_decisions.pop(0)
+
+    def set_task(self, task: str):
+        self.current_task = task
+
+    def add_todo(self, todo: str):
+        self.pending_todos.append(todo)
+
+    def get_context(self, max_chars: int = 500) -> str:
+        """获取本会话的上下文摘要。"""
+        parts = []
+        if self.current_task:
+            parts.append(f"当前任务: {self.current_task}")
+        if self.recent_decisions:
+            dec_lines = [f"- {t}: {d}" for _, t, d in self.recent_decisions[-3:]]
+            parts.append("最近决策:\n" + "\n".join(dec_lines))
+        if self.pending_todos:
+            parts.append(f"待办: {', '.join(self.pending_todos)}")
+        context = "\n".join(parts)
+        return context[:max_chars]
+
+
+# Global session memory instance
+_session_memory = SessionMemory()
+
+
+# ============ Memory Service ============
+
+def remember(
+    content: str,
+    type: str = "observation",
+    title: str | None = None,
+    narrative: str | None = None,
+    tags: list | None = None,
+    task_type: str | None = None,
+    triggered_by_obs_id: int | None = None,
+    supersedes_decision_id: int | None = None,
+) -> dict:
+    """写入记忆 + 自动提取标签。
+
+    流程：
+    1. 自动提取标签（规则）
+    2. 生成标题（取内容前20字符，或用提供的）
+    3. 写入 memory_store
+    4. 更新 embedding（异步，写入失败不影响主流程）
+    5. 如果是决策，记录到 session_memory
+
+    Returns:
+        {"id": int, "tags": list, "title": str}
+    """
+    from memory_store import add_observation, add_decision
+
+    # Auto-extract tags
+    auto_tags = extract_tags(content, task_type)
+    if tags:
+        merged = list(set(auto_tags + [t for t in tags if t]))
+    else:
+        merged = auto_tags
+
+    # Generate title
+    if not title:
+        title = content[:40].strip()
+        if len(content) > 40:
+            title += "..."
+
+    # Store
+    try:
+        if type == "decision":
+            record_id = add_decision(
+                title=title,
+                decision=content,
+                rejected_alternatives=None,
+                rationale=narrative,
+                triggered_by_obs_id=triggered_by_obs_id,
+                supersedes_decision_id=supersedes_decision_id,
+            )
+            _session_memory.add_decision(title, content, record_id)
+        else:
+            record_id = add_observation(
+                type=type,
+                title=title,
+                narrative=narrative or content,
+                tags=merged,
+                task_type=task_type,
+            )
+
+        # Note: embedding is updated separately via build_embeddings() or scheduled task
+        # not blocking the write path
+
+        return {"id": record_id, "tags": merged, "title": title}
+
+    except Exception as e:
+        print(f"[memory_service] remember failed: {e}")
+        return {"id": None, "error": str(e)}
+
+
+def recall(
+    query: str,
+    context: str = "",
+    tags: list | None = None,
+    task_type: str | None = None,
+    top_k: int = 5,
+) -> str:
+    """检索记忆 + 构建上下文字符串。
+
+    流程：
+    1. 如果有 session_context，优先在 session_memory 中找
+    2. 用 memory_retrieval 多路检索
+    3. 拼接为可读上下文
+
+    Returns:
+        上下文字符串，可以直接拼到 prompt 末尾
+    """
+    from memory_retrieval import retrieve, build_context, rewrite_query
+
+    # Step 1: Check session memory first (no retrieval needed)
+    session_ctx = _session_memory.get_context()
+    if session_ctx and (len(query) < 5 or query in session_ctx):
+        # Short query that matches session context
+        return f"[Session Context]\n{session_ctx}\n\n"
+
+    # Step 2: Multi-query retrieval
+    queries = rewrite_query(query)
+    candidates = retrieve(
+        query_or_queries=queries,
+        tags=tags,
+        task_type=task_type,
+        top_k=top_k,
+    )
+
+    # Step 3: Build context
+    ctx = build_context(query, candidates)
+    if not ctx:
+        return ""
+
+    return f"[Relevant Memory]\n{ctx}\n\n"
+
+
+def reflect() -> dict:
+    """定期分析：生成洞察和建议。
+
+    分析最近7天的记忆，生成：
+    - 高频标签
+    - 新发现/教训
+    - 决策趋势
+
+    Returns:
+        dict with keys: new_insights, tags_frequency, recent_decisions
+    """
+    from memory_store import get_recent, search
+
+    recent = get_recent(days=7, limit=100)
+
+    # Count tag frequency
+    tag_counts = {}
+    for r in recent:
+        tags_str = r.get("tags", "")
+        if tags_str:
+            for tag in tags_str.split(","):
+                tag = tag.strip()
+                if tag:
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+
+    top_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+
+    # Find discoveries and lessons
+    insights = [r for r in recent if r.get("type") in ("discovery", "lesson", "bugfix")]
+
+    # Recent decisions
+    decisions = [r for r in recent if r.get("kind") == "decision" or r.get("type") == "decision"]
+
+    return {
+        "new_insights": insights[:5],
+        "tags_frequency": top_tags,
+        "recent_decisions": decisions[:5],
+        "total_recent": len(recent),
+    }
+
+
+def get_session_memory() -> SessionMemory:
+    """获取当前会话的短期记忆实例。"""
+    return _session_memory
+
+
+def clear_session_memory():
+    """清除会话记忆（通常在会话结束时调用）。"""
+    global _session_memory
+    _session_memory = SessionMemory()
+
+
+# ============ CLI ============
+
+def cli():
+    import argparse
+    p = argparse.ArgumentParser()
+    sub = p.add_subparsers()
+
+    remember_p = sub.add_parser("remember", help="Write a memory")
+    remember_p.add_argument("type", choices=["observation", "decision", "bugfix", "discovery", "lesson"])
+    remember_p.add_argument("content")
+    remember_p.add_argument("--title", default=None)
+    remember_p.add_argument("--tags", default=None)
+    remember_p.add_argument("--task-type", default=None)
+    remember_p.set_defaults(cmd="remember")
+
+    recall_p = sub.add_parser("recall", help="Recall memories")
+    recall_p.add_argument("query")
+    recall_p.add_argument("--top-k", type=int, default=5)
+    recall_p.set_defaults(cmd="recall")
+
+    reflect_p = sub.add_parser("reflect", help="Generate insights from recent memories")
+    reflect_p.set_defaults(cmd="reflect")
+
+    args = p.parse_args()
+
+    if not hasattr(args, "cmd"):
+        p.print_help()
+        return
+
+    if args.cmd == "remember":
+        tags = args.tags.split(",") if args.tags else None
+        result = remember(
+            content=args.content,
+            type=args.type,
+            title=args.title,
+            tags=tags,
+            task_type=args.task_type,
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+
+    elif args.cmd == "recall":
+        ctx = recall(args.query, top_k=args.top_k)
+        print(ctx if ctx else "(no results)")
+
+    elif args.cmd == "reflect":
+        result = reflect()
+        print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+
+
+if __name__ == "__main__":
+    cli()
