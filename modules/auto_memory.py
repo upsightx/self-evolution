@@ -46,6 +46,16 @@ DISCOVERY_KEYWORDS = ['发现', '原来']
 LESSON_KEYWORDS = ['教训', '经验']
 
 MIN_CONTENT_LENGTH = 10
+MAX_CONTENT_LENGTH = 200  # Too long = probably a paragraph, not a memory
+
+# Content that looks like log fragments, not real memories
+NOISE_PATTERNS = re.compile(
+    r'^[）)、，,\s]|'           # starts with punctuation/bracket
+    r'^[a-zA-Z_]+\(|'          # starts with function call
+    r'^\d+[行条个]|'            # starts with count
+    r'^[\-\*]\s|'              # starts with list marker
+    r'→|✅|❌|✓|☑'             # status markers
+)
 
 
 def _classify_observation(text, trigger):
@@ -106,6 +116,10 @@ def extract_memories(text):
             content = _clean_content(match.group(1))
             if len(content) < MIN_CONTENT_LENGTH:
                 continue
+            if len(content) > MAX_CONTENT_LENGTH:
+                continue
+            if NOISE_PATTERNS.search(content):
+                continue
             if content in seen_narratives:
                 continue
             seen_narratives.add(content)
@@ -126,6 +140,10 @@ def extract_memories(text):
         for match in re.finditer(pattern, text):
             content = _clean_content(match.group(1))
             if len(content) < MIN_CONTENT_LENGTH:
+                continue
+            if len(content) > MAX_CONTENT_LENGTH:
+                continue
+            if NOISE_PATTERNS.search(content):
                 continue
             if content in seen_decisions:
                 continue
