@@ -187,7 +187,9 @@ class Orchestrator:
         return {"status": "ok", "saved": result.get("saved", 0), "skipped_dupes": result.get("skipped", 0)}
 
     def run_todo_scan(self):
-        """Read today's daily log and extract todos into pending-tasks.md."""
+        """Read today's daily log and extract todos into pending-tasks.md.
+        Only high-confidence todos (>= 0.8) are extracted from logs,
+        since logs contain descriptive text, not conversational commands."""
         today = datetime.now().strftime("%Y-%m-%d")
         daily_log = MEMORY_DIR / f"{today}.md"
         if not daily_log.exists():
@@ -196,6 +198,8 @@ class Orchestrator:
         from todo_extractor import extract_todos_from_text
         pending_path = MEMORY_DIR / "pending-tasks.md"
         todos = extract_todos_from_text(text, pending_tasks_path=str(pending_path))
+        # Filter: only high-confidence from logs (logs != conversation)
+        todos = [t for t in todos if t.get("confidence", 0) >= 0.8]
         if not todos:
             return {"status": "ok", "new_todos": 0}
         # Append new todos to pending-tasks.md
