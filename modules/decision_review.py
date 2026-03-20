@@ -94,7 +94,11 @@ def review_stats(db_path=None):
     conn = _get_conn(db_path)
     _ensure_table(conn)
     total = conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
-    reviewed = conn.execute("SELECT COUNT(DISTINCT decision_id) FROM decision_reviews").fetchone()[0]
+    # Only count reviews that reference existing decisions
+    reviewed = conn.execute(
+        "SELECT COUNT(DISTINCT dr.decision_id) FROM decision_reviews dr "
+        "INNER JOIN decisions d ON dr.decision_id = d.id"
+    ).fetchone()[0]
     unreviewed = total - reviewed
 
     outcome_rows = conn.execute("""
