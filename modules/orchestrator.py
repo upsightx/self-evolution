@@ -32,9 +32,13 @@ HEARTBEAT_STATE = MEMORY_DIR / "heartbeat-state.json"
 
 SCHEDULE = {
     "feedback_analysis":    {"interval_hours": 24,  "fn": "run_feedback_analysis"},
+    "auto_memory":          {"interval_hours": 24,  "fn": "run_auto_memory"},
+    "todo_scan":            {"interval_hours": 24,  "fn": "run_todo_scan"},
+    "decision_reminder":    {"interval_hours": 72,  "fn": "run_decision_reminder"},
     "model_routing_update": {"interval_hours": 168, "fn": "run_model_routing"},
     "memory_lru":           {"interval_hours": 168, "fn": "run_memory_lru"},
     "skill_gap_scan":       {"interval_hours": 168, "fn": "run_skill_gap_scan"},
+    "skill_gap_alert":      {"interval_hours": 168, "fn": "run_skill_gap_alert"},
     "decision_review":      {"interval_hours": 336, "fn": "run_decision_review"},
 }
 
@@ -168,6 +172,92 @@ class Orchestrator:
         pending = get_unreviewed_decisions()
         report = generate_review_report()
         return {"pending_reviews": len(pending), "report_length": len(report) if report else 0}
+
+    def run_auto_memory(self):
+        """Read today's daily log and auto-extract memories into memory.db."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        daily_log = MEMORY_DIR / f"{today}.md"
+        if not daily_log.exists():
+            return {"status": "skipped", "reason": "no daily log for today"}
+        text = daily_log.read_text(encoding="utf-8")
+        if len(text.strip()) < 50:
+            return {"status": "skipped", "reason": "daily log too short"}
+        from auto_memory import auto_save
+        result = auto_save(text)
+        return {"status": "ok", "saved": result.get("saved", 0), "skipped_dupes": result.get("skipped", 0)}
+
+    def run_todo_scan(self):
+        """Read today's daily log and extract todos into pending-tasks.md."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        daily_log = MEMORY_DIR / f"{today}.md"
+        if not daily_log.exists():
+            return {"status": "skipped", "reason": "no daily log for today"}
+        text = daily_log.read_text(encoding="utf-8")
+        from todo_extractor import extract_todos_from_text
+        pending_path = MEMORY_DIR / "pending-tasks.md"
+        todos = extract_todos_from_text(text, pending_tasks_path=str(pending_path))
+        if not todos:
+            return {"status": "ok", "new_todos": 0}
+        # Append new todos to pending-tasks.md
+        existing = pending_path.read_text(encoding="utf-8") if pending_path.exists() else ""
+        new_lines = []
+        for t in todos:
+            line = f"- [ ] {t['title']}"
+            if t.get("time_hint"):
+                line += f" ({t['time_hint']})"
+            if line not in existing:
+                new_lines.append(line)
+        if new_lines:
+            with open(pending_path, "a", encoding="utf-8") as f:
+                if existing and not existing.endswith("\n"):
+                    f.write("\n")
+                if not existing:
+                    f.write(f"# 待办事项\n\n")
+                f.write(f"\n## {today}\n")
+                f.write("\n".join(new_lines) + "\n")
+        return {"status": "ok", "new_todos": len(new_lines)}
+
+    def run_decision_reminder(self):
+        """Check for decisions due for review and return reminder list."""
+        from decision_review import get_unreviewed_decisions
+        pending = get_unreviewed_decisions(min_age_days=7, limit=5)
+        if not pending:
+            return {"status": "ok", "pending": 0, "reminders": []}
+        reminders = []
+        for d in pending:
+            reminders.append({
+                "id": d.get("id"),
+                "title": d.get("title", ""),
+                "age_days": d.get("age_days", 0),
+            })
+        return {"status": "ok", "pending": len(reminders), "reminders": reminders}
+
+    def run_skill_gap_alert(self):
+        """Check for high-severity skill gaps and append to HEARTBEAT.md."""
+        from skill_discovery import analyze_capability_gaps, parse_failures, _load_bugfix_observations, FAILURES_PATH, STATS_PATH
+        from db_common import DB_PATH
+        import json as _json
+        failures = parse_failures(str(FAILURES_PATH)) if FAILURES_PATH.exists() else []
+        stats_data = _json.loads(STATS_PATH.read_text(encoding="utf-8")) if STATS_PATH.exists() else {}
+        bugfix_obs = _load_bugfix_observations(str(DB_PATH))
+        gaps = analyze_capability_gaps(failures, stats_data, bugfix_obs)
+        high_gaps = [g for g in gaps if g["severity"] == "high"]
+        if not high_gaps:
+            return {"status": "ok", "high_gaps": 0}
+        # Append alert to HEARTBEAT.md
+        heartbeat_path = MEMORY_DIR.parent / "HEARTBEAT.md"
+        if heartbeat_path.exists():
+            existing = heartbeat_path.read_text(encoding="utf-8")
+            marker = "## 能力缺口提醒（自动生成）"
+            if marker in existing:
+                return {"status": "ok", "high_gaps": len(high_gaps), "action": "already_alerted"}
+            alert_lines = [f"\n{marker}\n"]
+            for g in high_gaps[:3]:
+                alert_lines.append(f"- **{g['gap']}** (severity: {g['severity']}) — {g.get('evidence', '')}")
+            alert_lines.append("- 考虑从 ClawHub/SkillHub 搜索对应 skill\n")
+            with open(heartbeat_path, "a", encoding="utf-8") as f:
+                f.write("\n".join(alert_lines))
+        return {"status": "ok", "high_gaps": len(high_gaps), "action": "alerted"}
 
     # ── public API ───────────────────────────────────────────────────────
 
