@@ -130,7 +130,6 @@ if __name__ == "__main__":
 | memory_embedding | 向量化 + 语义搜索 | 不做 CRUD |
 | memory_context | 构建上下文字符串 | 不做写入 |
 | feedback_loop | 任务反馈分析 + 改进建议 | 不做模型推荐 |
-| model_router | 模型推荐 + 路由表 | 不做任务记录 |
 | agent_dispatch | 串联闭环（prepare/complete） | 不做具体分析 |
 | orchestrator | 调度 + 状态面板 | 不做具体业务逻辑 |
 
