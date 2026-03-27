@@ -357,6 +357,52 @@ def import_json(data):
 # These were extracted to separate modules but are re-exported here
 # so existing code that does `from memory_db import X` still works.
 
+# Bridge old public entrypoints to the restored v6 memory stack where safe.
+# Keep signatures backward-compatible so existing callers continue to work.
+
+def remember(content, type="observation", title=None, narrative=None, tags=None,
+             task_type=None, triggered_by_obs_id=None, supersedes_decision_id=None):
+    from memory_service import remember as _remember
+    return _remember(content=content, type=type, title=title, narrative=narrative,
+                     tags=tags, task_type=task_type,
+                     triggered_by_obs_id=triggered_by_obs_id,
+                     supersedes_decision_id=supersedes_decision_id)
+
+
+def recall(query, context="", tags=None, task_type=None, top_k=5):
+    from memory_service import recall as _recall
+    return _recall(query=query, context=context, tags=tags, task_type=task_type, top_k=top_k)
+
+
+def add_observation(type, title, narrative=None, facts=None, concepts=None,
+                    session_id=None, source=None, verified=False, tags=None, task_type=None):
+    from memory_store import add_observation as _add_observation
+    return _add_observation(type=type, title=title, narrative=narrative, facts=facts,
+                            concepts=concepts, session_id=session_id, source=source,
+                            verified=verified, tags=tags, task_type=task_type)
+
+
+def add_decision(title, decision, rejected_alternatives=None, rationale=None,
+                 triggered_by_obs_id=None, supersedes_decision_id=None):
+    from memory_store import add_decision as _add_decision
+    return _add_decision(title=title, decision=decision,
+                         rejected_alternatives=rejected_alternatives,
+                         rationale=rationale,
+                         triggered_by_obs_id=triggered_by_obs_id,
+                         supersedes_decision_id=supersedes_decision_id)
+
+
+def search(query=None, type=None, limit=20, tags=None, task_type=None, time_range=None):
+    from memory_store import search as _search
+    return _search(query=query, type=type, tags=tags, task_type=task_type,
+                   time_range=time_range, limit=limit)
+
+
+def init_v6_stack():
+    from memory_store import init_db as _init_v6
+    return _init_v6()
+
+
 def embed_text(texts):
     from memory_embedding import embed_text as _embed
     return _embed(texts)
