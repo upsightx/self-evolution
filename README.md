@@ -18,17 +18,6 @@
 |------|----------|------|
 | **OpenClaw** | 通过心跳调度 + agent_bridge 自动录入 | 生产环境使用中，子Agent完成后自动录入结果 |
 
-### 可以集成但未验证的
-
-| 平台/框架 | 集成思路 |
-|-----------|----------|
-| **LangChain / LangGraph** | 在 Chain 的回调中调用 `agent_bridge.record_agent_result()` 录入结果 |
-| **AutoGen** | 在 Agent 的 `receive` 方法中录入任务结果 |
-| **CrewAI** | 在 Task 的 `callback` 中录入 |
-| **Dify / Coze** | 通过 webhook 或插件调用 CLI：`python3 agent_bridge.py record ...` |
-| **自研 Agent** | 直接 import 模块，在任务完成后调一行 `record_agent_result()` |
-| **定时脚本 / Cron** | 用 CLI 接口，不需要写 Python 代码 |
-
 ### 不适合的场景
 
 - 单轮对话机器人（没有任务概念，不需要积累经验）
