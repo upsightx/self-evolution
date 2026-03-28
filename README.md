@@ -83,6 +83,7 @@ export SELF_EVOLUTION_DB=/path/to/your/memory.db
 - 把改进建议变成可验证的实验，而不是停留在"下次注意"
 - 用工程规则判断实验是否真的有效，防止被单次巧合误导
 - 根据系统当前状态自动调整进化策略（该激进还是该保守）
+- 定期从外部信息源主动学习（GitHub Trending、Hacker News、arXiv、融资动态等 9 个源），产出结构化知识笔记并入库
 
 ---
 
