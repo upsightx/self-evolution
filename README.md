@@ -323,6 +323,36 @@ context = es.build_reflection_context()
 
 ---
 
+### 配套 Skill：外部学习（`skills/external-learning/`）
+
+定期从外部信息源主动学习最新动态，产出可操作的知识而非浅层摘要。
+
+**两阶段流程：**
+1. **广筛**：子Agent 并行扫描多个信息源，产出候选清单（标题+URL+评分+理由）
+2. **深读**：主Agent 对高分候选逐条读原文，产出结构化笔记并入库
+
+**9个信息源：**
+
+| 优先级 | 信息源 | 频率 |
+|--------|--------|------|
+| 1 | GitHub Trending | 每次必查 |
+| 1 | Hacker News | 每次必查 |
+| 2 | 融资动态 | 每天 |
+| 2 | TechCrunch/VentureBeat | 每天 |
+| 2 | 量子位/机器之心 | 每天 |
+| 3 | arXiv 论文 | 每 2 天 |
+| 3 | Product Hunt | 每 2 天 |
+| 3 | Papers With Code | 每 2 天 |
+| 4 | 行业深度研究 | 按需 |
+
+**质量控制：**
+- 每条笔记必须标注来源等级（摘要级/原文级/多源验证级）
+- 论文类高分条目要求至少原文级
+- 涉及关键数字的条目必须二次验证
+- 原文存档到 `memory/learning/raw/` 目录，可回溯
+
+**注意：** 广筛阶段依赖子Agent并行调度能力（如 OpenClaw 的 `sessions_spawn`）。如果你的 Agent 框架不支持子Agent，可以改为串行执行或只使用深读阶段。每个信息源的具体抓取配置见 `skills/external-learning/references/` 下的模板文件。
+
 ## 核心闭环
 
 这套系统最重要的不是单个模块，而是它们串起来形成的闭环：
@@ -445,6 +475,7 @@ python3 modules/evolution_strategy.py reflection-context
 | v6 | 2026-03-20 | 检索层重构（三层分离 + 查询改写 + 时间衰减 + 动态阈值） |
 | v7 | 2026-03-28 | 进化执行器 + 归因验证器 + 策略引擎（从 Evolver 迁移核心思想，15000行JS→350行Python） |
 | v7.1 | 2026-03-28 | agent_bridge 自动录入 + 时间感知检索 + 自动标签提取 |
+| v7.2 | 2026-03-28 | 外部学习模块（两阶段深度学习 Skill） |
 
 ---
 
