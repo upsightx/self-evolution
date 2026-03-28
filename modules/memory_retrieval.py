@@ -50,6 +50,7 @@ def rewrite_query(query: str) -> list[str]:
 
     用规则扩展词汇，不调用LLM。
     例如："上次那个爬虫" → ["爬虫", "web scraper", "数据采集", "抓取"]
+    时间表达会被识别但不从查询中移除（由 retrieve() 处理时间过滤）。
 
     Returns:
         包含原查询 + 改写表达的列表（去重，最多5个）
@@ -62,6 +63,12 @@ def rewrite_query(query: str) -> list[str]:
     for pattern, replacement in _INFORMAL_MAP.items():
         cleaned = re.sub(pattern, replacement, cleaned)
     cleaned = cleaned.strip()
+
+    # 2. 去除时间表达词（检索时由时间过滤处理，不需要作为关键词）
+    time_words = r"(今天|昨天|前天|上午|下午|最近|近期|上周|这周|上个月|这个月)"
+    cleaned_no_time = re.sub(time_words, "", cleaned).strip()
+    if cleaned_no_time and len(cleaned_no_time) >= 2:
+        cleaned = cleaned_no_time
 
     # 2. 收集所有表达
     expressions = {cleaned}
@@ -117,12 +124,12 @@ def retrieve(
     top_k: int = 5,
     min_score: float = 0.3,
 ) -> list[dict]:
-    """多路检索 + 动态阈值。
+    """多路检索 + 动态阈值 + 时间感知。
 
     流程：
-    1. 如果是字符串，rewrite_query 生成多查询
+    1. 如果是字符串，检测时间暗示并 rewrite_query 生成多查询
     2. 标签精确过滤（第一层）
-    3. 时间分区（第二层，auto=7天优先不够再扩大）
+    3. 时间分区（第二层，auto=根据时间暗示或7天优先）
     4. 多查询各召回一批
     5. 加权排序（语义分 × 时间衰减）
     6. 动态阈值（确保至少返回top_k，不足则降低阈值）
@@ -134,11 +141,29 @@ def retrieve(
     # Lazy import to avoid circular dependency at module load
     from memory_store import search as store_search
 
+    # Detect time hint from original query string
+    time_hint = None
+    if isinstance(query_or_queries, str):
+        from agent_bridge import parse_time_hint
+        time_hint = parse_time_hint(query_or_queries)
+
     # Normalize queries
     if isinstance(query_or_queries, str):
         queries = rewrite_query(query_or_queries)
     else:
         queries = query_or_queries
+
+    # Override time_range based on time hint
+    if time_hint and time_range == "auto":
+        days = time_hint["days_ago"]
+        if days <= 1:
+            time_range = "recent"  # 7 days, will catch today/yesterday
+        elif days <= 7:
+            time_range = "recent"
+        elif days <= 30:
+            time_range = "month"
+        else:
+            time_range = None  # all
 
     # Normalize tags
     if tags:
