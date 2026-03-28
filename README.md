@@ -1,518 +1,234 @@
-# 🧬 AI Agent 自我进化引擎
+# 🧬 Self-Evolution Engine for AI Agents
 
-一套帮助 AI Agent 从经验中学习、持续自我改进的轻量级框架。所有状态持久化到本地数据库，Agent 重启不丢失记忆。
+让 AI Agent 从经验中学习、持续自我改进的轻量级框架。
 
----
+Python 3.8+ · SQLite · 零外部依赖 · 全状态持久化
 
-## 适用场景
+## 它解决什么问题
 
-这套系统不绑定任何特定的 Agent 框架。只要你的 Agent 满足以下条件，就可以直接用：
+大多数 AI Agent 每次启动都从零开始——不记得上次犯了什么错，不知道哪个模型更适合哪类任务，也不会从失败中总结教训。
 
-- 会执行任务（不管是写代码、搜索信息、还是调 API）
-- 任务有成功/失败的概念
-- 希望 Agent 能从历史中学习，而不是每次从零开始
+Self-Evolution 让 Agent 具备七种能力：
 
-### 已验证的集成
+1. **结构化记忆** — 持久化存储经验、决策和教训，重启不丢失
+2. **失败模式分析** — 自动识别重复出现的失败，生成改进建议
+3. **A/B 实验验证** — 把改进建议变成可回滚的实验，用数据判断是否有效
+4. **归因验证** — 防止被单次巧合误导，样本不足时敢说"不确定"
+5. **策略自适应** — 根据系统状态自动切换进化策略（激进/保守/修复）
+6. **外部学习** — 定期从 9 个信息源主动学习，产出结构化知识笔记
+7. **冷热记忆管理** — 追踪记忆访问频率，自动建议归档冷数据
 
-| 平台 | 集成方式 | 说明 |
-|------|----------|------|
-| **OpenClaw** | 通过心跳调度 + agent_bridge 自动录入 | 生产环境使用中，子Agent完成后自动录入结果 |
+## 架构
 
-### 不适合的场景
-
-- 单轮对话机器人（没有任务概念，不需要积累经验）
-- 纯 RAG 检索系统（这套系统解决的是"从自身经验中学习"，不是"从外部文档中检索"）
-- 需要分布式多节点共享记忆的场景（当前是单机 SQLite，不支持多进程并发写入）
-
-### 集成只需要 3 步
-
-```python
-# 1. 初始化
-from memory_db import init_db
-init_db()
-
-# 2. 每次任务完成后录入
-from agent_bridge import record_agent_result
-record_agent_result(
-    task_type="coding",      # 你的任务分类
-    model="gpt-4",           # 你用的模型
-    success=True,            # 成功还是失败
-    description="重构用户模块",  # 任务描述
-    critic_score=85,         # 可选：质量评分
-)
-
-# 3. 定期分析（可以用 cron、心跳、或手动）
-from evolution_strategy import detect_signals, resolve_strategy
-signals = detect_signals()       # 检测系统状态
-strategy = resolve_strategy()    # 获取当前推荐策略
-```
-
-数据库路径通过环境变量配置：
-```bash
-export SELF_EVOLUTION_DB=/path/to/your/memory.db
-```
-
-不设置则默认在模块目录下创建 `memory.db`。
-
----
-
-## 为什么需要这个？
-
-大多数 AI Agent 每次对话都是从零开始。它们不记得上次犯了什么错，不知道哪个模型更适合哪类任务，也不会从失败中总结教训。
-
-这个项目要解决的问题很简单：**让 Agent 能像人一样积累经验、反思失败、验证改进。**
-
-具体来说，它让 Agent 具备以下能力：
-
-- 记住重要的经验、决策和教训，而不是每次重启都归零
-- 统计不同方法的成功率，用数据而不是感觉做决策
-- 识别重复出现的失败模式，自动生成改进建议
-- 把改进建议变成可验证的实验，而不是停留在"下次注意"
-- 用工程规则判断实验是否真的有效，防止被单次巧合误导
-- 根据系统当前状态自动调整进化策略（该激进还是该保守）
-- 定期从外部信息源主动学习（GitHub Trending、Hacker News、arXiv、融资动态等 9 个源），产出结构化知识笔记并入库
-
----
-
-## 架构总览
-
-系统分三层，每层职责清晰：
+三层架构，每层职责独立：
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                         进化层                                │
-│                                                              │
-│  evolution_strategy        evolution_executor                 │
-│  ┌──────────────────┐     ┌──────────────────────────┐       │
-│  │ 5种策略自动切换    │     │ 实验生命周期管理          │       │
-│  │ 6种信号检测       │     │ draft→active→concluded   │       │
-│  │ 自适应反思频率     │     │ 自动发现候选+自动结论     │       │
-│  └──────────────────┘     └──────────────────────────┘       │
-├──────────────────────────────────────────────────────────────┤
-│                         分析层                                │
-│                                                              │
-│  feedback_loop              causal_validator                  │
-│  ┌──────────────────┐     ┌──────────────────────────┐       │
-│  │ 任务结果记录       │     │ 纯函数归因验证            │       │
-│  │ 失败模式分析       │     │ 4维度加权打分             │       │
-│  │ 改进建议生成       │     │ 三档判定+置信度           │       │
-│  └──────────────────┘     └──────────────────────────┘       │
-├──────────────────────────────────────────────────────────────┤
-│                         记忆层                                │
-│                                                              │
-│  memory_service → memory_retrieval → memory_store             │
-│  memory_db    memory_embedding    memory_lru                  │
-│  file_registry    db_common                                   │
-│  ┌──────────────────────────────────────────────────┐        │
-│  │ 结构化存储 · FTS5全文搜索 · 语义检索 · 冷热管理    │        │
-│  │ 查询改写 · 时间衰减 · 标签过滤 · 文件台账         │        │
-│  └──────────────────────────────────────────────────┘        │
-└──────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│  进化层                                          │
+│  evolution_strategy · evolution_executor          │
+│  策略选择 · 信号检测 · 实验管理 · 自适应反思       │
+├─────────────────────────────────────────────────┤
+│  分析层                                          │
+│  feedback_loop · causal_validator                │
+│  失败模式分析 · 改进建议 · 归因验证               │
+├─────────────────────────────────────────────────┤
+│  记忆层                                          │
+│  memory_db · memory_store · memory_retrieval     │
+│  memory_service · memory_embedding · memory_lru  │
+│  结构化存储 · FTS5搜索 · 语义检索 · 冷热管理      │
+└─────────────────────────────────────────────────┘
 ```
-
----
-
-## 模块详解
-
-### 记忆层（7个模块）
-
-记忆层负责"别忘、别丢、别靠感觉"。
-
-| 模块 | 文件 | 功能 |
-|------|------|------|
-| 结构化记忆 | `memory_db.py` | 核心数据库，存储观察(observations)、决策(decisions)、会话摘要(session_summaries)。支持 FTS5 全文搜索，中英文双路径检索 |
-| 持久化层 | `memory_store.py` | 记忆的写入和查询，支持标签过滤、时间范围过滤、任务类型过滤。向后兼容旧接口 |
-| 检索层 | `memory_retrieval.py` | 智能检索：查询改写（去口语化+同义词扩展）、动态阈值、时间衰减。最多5个查询角度 |
-| 服务层 | `memory_service.py` | 对外统一接口：`remember()` 存入记忆、`recall()` 检索记忆、`reflect()` 反思总结 |
-| 向量化 | `memory_embedding.py` | 可选的语义搜索支持，基于 SiliconFlow Embedding API。不配置 API Key 时自动降级为关键词搜索 |
-| 冷热管理 | `memory_lru.py` | 追踪每条记忆的访问频率，区分热区/冷区，给出归档候选建议。防止记忆库无限膨胀 |
-| 文件台账 | `file_registry.py` | 记录文件/文档的元信息（名称、路径、关联任务），方便按"上次那个文件"这类描述找回 |
-| 公共连接 | `db_common.py` | 统一的 SQLite 连接管理，WAL 模式，所有模块共享 |
-
-### 分析层（2个模块）
-
-分析层负责"知道哪里做得好，哪里做得烂"。
-
-#### feedback_loop.py — 反馈闭环
-
-记录每次任务的预期结果和实际结果，自动分析失败模式。
-
-核心功能：
-- `record_task_outcome()` — 记录一次任务执行结果（任务类型、模型、成功/失败、差距分析）
-- `analyze_patterns()` — 扫描所有任务记录，找出成功率低于 70% 的分组
-- `generate_template_improvements()` — 基于失败记录，用规则匹配生成改进建议
-- `analyze_template_effectiveness()` — 分析某类任务的模板有效性（成功率、常见失败原因、改进建议）
-
-```python
-# 记录一次任务结果
-record_task_outcome(
-    task_id="sub-agent-42",
-    task_type="coding",
-    model="minimax",
-    expected="完成代码重构",
-    actual="只输出了意图，没写代码",
-    success=False,
-    notes="子Agent没有执行，只描述了计划"
-)
-
-# 分析失败模式
-patterns = analyze_patterns(min_samples=5)
-# → [{"task_type": "coding", "model": "minimax", "failure_rate": 0.4, "pattern": "未执行, 意图"}]
-
-# 生成改进建议
-suggestions = generate_template_improvements("coding")
-# → ["在指令开头添加强制执行提示", "考虑使用更强的模型"]
-```
-
-#### causal_validator.py — 归因验证器
-
-判断一次实验改动是否真的有效。**纯函数模块，不依赖数据库，只接收数据做判断。**
-
-核心原则：**敢说"不知道"比乱自信强。**
-
-验证规则：
-
-1. **样本量门槛** — 实验样本少于 3 次，直接输出 `uncertain`，不冒险下结论
-2. **4维度加权打分**：
-   - 成功率变化（权重 0.4）
-   - 返工率变化（权重 0.25，越低越好）
-   - Critic 评分变化（权重 0.25）
-   - 耗时变化（权重 0.1，越短越好）
-3. **样本量置信度调整** — 样本越多，置信度越高（6条=0.7，10条=0.85，20条=1.0）
-4. **三档判定**：
-   - `effective` — 改动确实有效，可以固化
-   - `uncertain` — 证据不足，继续观察
-   - `ineffective` — 改动没用或变差了，应该回滚
-
-```python
-from causal_validator import validate
-
-result = validate(
-    baseline_results=[
-        {"success": True, "critic_score": 72, "rework": False},
-        {"success": False, "critic_score": 55, "rework": True},
-        {"success": True, "critic_score": 78, "rework": False},
-    ],
-    experiment_results=[
-        {"success": True, "critic_score": 85, "rework": False},
-        {"success": True, "critic_score": 88, "rework": False},
-        {"success": True, "critic_score": 90, "rework": False},
-    ],
-    min_samples=3,
-)
-# result.verdict = "effective"
-# result.confidence = 0.7
-# result.reason = "成功率提升 +33%；返工率下降 -33%；Critic 分提升 +16.7"
-```
-
-### 进化层（2个模块）
-
-进化层负责"决定下一步往哪进化"。
-
-#### evolution_executor.py — 进化执行器
-
-把改进建议变成可回滚的小实验，管理实验的完整生命周期。
-
-实验状态流转：
-```
-draft（草案）→ active（执行中）→ concluded（已结论）
-                                ↘ cancelled（已取消）
-```
-
-核心功能：
-- `create_experiment()` — 创建实验草案
-- `activate_experiment()` — 激活实验，开始收集数据
-- `record_and_maybe_conclude()` — 录入结果，样本够了自动触发验证并结论（**最常用的入口**）
-- `pending_candidates()` — 自动从 feedback_loop 发现候选实验（failure_rate ≥ 0.3 且无活跃实验）
-- `conclude_experiment()` — 手动结论
-- `cancel_experiment()` — 取消实验
-
-```python
-import evolution_executor as ee
-
-# 自动发现候选
-candidates = ee.pending_candidates()
-# → [{"task_type": "coding", "failure_rate": 0.4, "sample_count": 12}]
-
-# 创建实验
-eid = ee.create_experiment(
-    source="feedback_loop",
-    task_type="coding",
-    problem="子Agent指令太长导致漏掉关键约束",
-    proposal="在指令首段加入负面清单（不要做什么）",
-    target_type="prompt_template",
-    min_samples=5,
-)
-
-# 激活
-ee.activate_experiment(eid)
-
-# 每次任务完成后录入结果（自动判断是否该结论）
-result = ee.record_and_maybe_conclude(
-    eid, phase="experiment",
-    success=True, critic_score=85, rework=False
-)
-# 当 baseline 和 experiment 都攒够 min_samples 时，自动返回验证结果：
-# {"verdict": "effective", "confidence": 0.7, "reason": "..."}
-```
-
-#### evolution_strategy.py — 策略引擎
-
-从运行数据中提取信号，自动选择进化策略，控制反思频率。
-
-**5种策略预设：**
-
-| 策略 | 修复 | 优化 | 创新 | 适用场景 |
-|------|------|------|------|----------|
-| `balanced` | 20% | 30% | 50% | 系统健康，正常运行 |
-| `innovate` | 5% | 15% | 80% | 停滞或修复循环，需要突破 |
-| `harden` | 40% | 40% | 20% | 刚做完大改动，需要稳定 |
-| `repair_only` | 80% | 20% | 0% | 高失败率，紧急修复 |
-| `steady_state` | 60% | 30% | 10% | 进化饱和，维持现状 |
-
-**6种信号检测：**
-
-| 信号 | 严重度 | 含义 |
-|------|--------|------|
-| `high_failure_rate` | 🔴 高 | 某类任务失败率 ≥ 50% |
-| `repair_loop` | 🔴 高 | 连续3次失败，修了但没改善 |
-| `elevated_failure_rate` | 🟡 中 | 失败率 30%~50% |
-| `recent_big_change` | 🟡 中 | 近3天大量新观察记录 |
-| `capability_gap` | 🟡 中 | 失败原因含依赖缺失/能力缺口 |
-| `stagnation` | 🟢 低 | 成功率高但无新进展 |
-| `all_healthy` | ℹ️ 信息 | 一切正常 |
-
-**自适应反思：**
-
-| 系统状态 | 反思间隔 |
-|----------|----------|
-| 有问题（高失败率/修复循环） | 每 1 天 |
-| 正常 | 每 3 天 |
-| 健康 | 每 5 天 |
-
-```python
-import evolution_strategy as es
-
-# 检测当前信号
-signals = es.detect_signals()
-# → [{"signal": "recent_big_change", "severity": "medium", "detail": "近3天新增39条观察记录"}]
-
-# 自动选择策略
-strategy = es.resolve_strategy()
-# → {"name": "harden", "reasoning": "近期有大改动，优先加固稳定性", ...}
-
-# 检查是否该反思
-ref = es.should_reflect()
-# → {"should_reflect": true, "reason": "从未反思过", "interval_days": 3}
-
-# 生成反思上下文（聚合信号+实验+失败模式）
-context = es.build_reflection_context()
-```
-
----
-
-### 配套 Skill：外部学习（`skills/external-learning/`）
-
-定期从外部信息源主动学习最新动态，产出可操作的知识而非浅层摘要。
-
-**两阶段流程：**
-1. **广筛**：子Agent 并行扫描多个信息源，产出候选清单（标题+URL+评分+理由）
-2. **深读**：主Agent 对高分候选逐条读原文，产出结构化笔记并入库
-
-**9个信息源：**
-
-| 优先级 | 信息源 | 频率 |
-|--------|--------|------|
-| 1 | GitHub Trending | 每次必查 |
-| 1 | Hacker News | 每次必查 |
-| 2 | 融资动态 | 每天 |
-| 2 | TechCrunch/VentureBeat | 每天 |
-| 2 | 量子位/机器之心 | 每天 |
-| 3 | arXiv 论文 | 每 2 天 |
-| 3 | Product Hunt | 每 2 天 |
-| 3 | Papers With Code | 每 2 天 |
-| 4 | 行业深度研究 | 按需 |
-
-**质量控制：**
-- 每条笔记必须标注来源等级（摘要级/原文级/多源验证级）
-- 论文类高分条目要求至少原文级
-- 涉及关键数字的条目必须二次验证
-- 原文存档到 `memory/learning/raw/` 目录，可回溯
-
-**注意：** 广筛阶段依赖子Agent并行调度能力（如 OpenClaw 的 `sessions_spawn`）。如果你的 Agent 框架不支持子Agent，可以改为串行执行或只使用深读阶段。每个信息源的具体抓取配置见 `skills/external-learning/references/` 下的模板文件。
 
 ## 核心闭环
 
-这套系统最重要的不是单个模块，而是它们串起来形成的闭环：
-
 ```
-                    ┌─────────────────────┐
-                    │  feedback_loop      │
-                    │  发现失败模式        │
-                    └─────────┬───────────┘
-                              ↓
-                    ┌─────────────────────┐
-                    │  evolution_executor  │
-                    │  生成候选实验        │
-                    └─────────┬───────────┘
-                              ↓
-                    ┌─────────────────────┐
-                    │  创建实验 (draft)    │
-                    │  激活实验 (active)   │
-                    └─────────┬───────────┘
-                              ↓
-                    ┌─────────────────────┐
-                    │  任务执行时录入结果   │
-                    │  record_and_maybe_  │
-                    │  conclude()         │
-                    └─────────┬───────────┘
-                              ↓
-                    ┌─────────────────────┐
-                    │  causal_validator   │
-                    │  样本够了自动验证    │
-                    └─────────┬───────────┘
-                              ↓
-              ┌───────────────┼───────────────┐
-              ↓               ↓               ↓
-        ┌──────────┐   ┌──────────┐   ┌──────────┐
-        │ effective │   │ uncertain│   │ineffective│
-        │ 固化改进   │   │ 继续观察 │   │ 回滚     │
-        └──────────┘   └──────────┘   └──────────┘
+feedback_loop 发现失败模式
+        ↓
+evolution_executor 生成候选实验
+        ↓
+    创建实验 → 激活
+        ↓
+  任务执行时自动录入结果
+        ↓
+  causal_validator 样本够了自动验证
+        ↓
+  effective → 固化    uncertain → 继续观察    ineffective → 回滚
 ```
 
-同时，`evolution_strategy` 在旁边持续监控：
-- 检测系统信号 → 自动切换策略
-- 控制反思频率 → 该反思时反思，不该反思时省资源
+`evolution_strategy` 持续监控系统信号，自动切换策略。
 
----
+## 模块一览
 
-## 数据库结构
+### 记忆层
 
-所有数据存储在一个 SQLite 文件中（默认 `memory.db`），WAL 模式。
+| 模块 | 功能 |
+|------|------|
+| `memory_db.py` | 结构化记忆数据库，FTS5 中英文双路径搜索 |
+| `memory_store.py` | 持久化写入，标签/时间/任务类型过滤 |
+| `memory_retrieval.py` | 智能检索：查询改写、时间感知、动态阈值、时间衰减 |
+| `memory_service.py` | 统一接口：remember / recall / reflect |
+| `memory_embedding.py` | 可选语义搜索（SiliconFlow BGE-M3，免费） |
+| `memory_lru.py` | 冷热追踪，归档建议 |
+| `file_registry.py` | 文件/文档元信息台账 |
+| `db_common.py` | SQLite 连接管理（WAL 模式） |
 
-| 表名 | 用途 | 关键字段 |
-|------|------|----------|
-| `observations` | 观察/发现/教训 | type, title, narrative, tags, task_type |
-| `decisions` | 决策记录（含被拒方案） | title, decision, rejected_alternatives, rationale |
-| `session_summaries` | 会话摘要 | request, learned, completed, next_steps |
-| `task_outcomes` | 任务执行结果 | task_type, model, success, gap_analysis |
-| `experiments` | 进化实验 | source, problem, proposal, status, verdict, confidence |
-| `embeddings` | 向量索引 | source_table, source_id, embedding |
+### 分析层
 
----
+| 模块 | 功能 |
+|------|------|
+| `feedback_loop.py` | 任务结果记录、失败模式分析、改进建议生成 |
+| `causal_validator.py` | 纯函数归因验证，4维度加权，三档判定 |
+
+### 进化层
+
+| 模块 | 功能 |
+|------|------|
+| `evolution_executor.py` | 实验生命周期：draft → active → concluded/cancelled |
+| `evolution_strategy.py` | 5种策略预设、6种信号检测、自适应反思频率 |
+| `agent_bridge.py` | 子Agent结果一键录入（task_outcome + observation + 实验） |
+
+### 配套 Skill
+
+| 目录 | 功能 |
+|------|------|
+| `skills/external-learning/` | 两阶段外部学习（广筛→深读），9个信息源，含落地评估 |
 
 ## 快速开始
 
 ```bash
-# 1. 初始化数据库
+# 初始化
 python3 modules/memory_db.py init
 
-# 2. 记录一些任务结果
-python3 modules/feedback_loop.py record coding minimax 1 --notes "重构成功"
-python3 modules/feedback_loop.py record coding minimax 0 --notes "只输出意图没写代码"
+# 录入任务结果
+python3 modules/feedback_loop.py record coding gpt-4 1 --notes "重构成功"
+python3 modules/feedback_loop.py record coding gpt-4 0 --notes "只输出意图没写代码"
 
-# 3. 分析失败模式
+# 分析失败模式
 python3 modules/feedback_loop.py analyze
 
-# 4. 检测系统信号
+# 检测系统信号 & 策略
 python3 modules/evolution_strategy.py signals
-
-# 5. 查看当前策略
 python3 modules/evolution_strategy.py strategy
 
-# 6. 查看实验候选
-python3 modules/evolution_executor.py candidates
-
-# 7. 创建并激活实验
+# 创建实验
 python3 modules/evolution_executor.py create \
-  --source feedback_loop \
-  --task-type coding \
+  --source feedback_loop --task-type coding \
   --problem "子Agent只描述计划不执行" \
   --proposal "指令首段加强制执行提示"
-python3 modules/evolution_executor.py activate 1
 
-# 8. 录入实验结果（实际使用中由调度层自动调用）
-python3 modules/evolution_executor.py record 1 baseline 1 --critic-score 75
-python3 modules/evolution_executor.py record 1 experiment 1 --critic-score 88
-
-# 9. 验证实验
+# 验证实验
 python3 modules/causal_validator.py validate 1
-
-# 10. 查看反思上下文
-python3 modules/evolution_strategy.py reflection-context
 ```
 
----
+Python 集成：
+
+```python
+from agent_bridge import record_agent_result
+
+# 每次子Agent完成后调一行
+record_agent_result(
+    task_type="coding",
+    model="gpt-4",
+    success=True,
+    description="重构用户模块",
+    critic_score=85,
+)
+```
+
+数据库路径通过环境变量配置：
+```bash
+export SELF_EVOLUTION_DB=/path/to/your/memory.db  # 默认在模块目录下
+```
+
+## 进化策略
+
+系统根据运行信号自动选择策略：
+
+| 策略 | 修复 | 优化 | 创新 | 触发条件 |
+|------|------|------|------|----------|
+| `balanced` | 20% | 30% | 50% | 系统健康 |
+| `innovate` | 5% | 15% | 80% | 停滞或修复循环 |
+| `harden` | 40% | 40% | 20% | 近期大改动 |
+| `repair_only` | 80% | 20% | 0% | 高失败率 |
+| `steady_state` | 60% | 30% | 10% | 进化饱和 |
+
+信号类型：`high_failure_rate` · `repair_loop` · `elevated_failure_rate` · `recent_big_change` · `capability_gap` · `stagnation` · `all_healthy`
+
+## 归因验证
+
+实验结论不靠感觉，靠工程规则：
+
+- **样本门槛**：< 3 次 → `uncertain`
+- **4维度加权**：成功率(0.4) + 返工率(0.25) + Critic分(0.25) + 耗时(0.1)
+- **三档判定**：`effective` / `uncertain` / `ineffective`
+- **核心原则**：敢说"不确定"比乱自信强
+
+## 外部学习
+
+两阶段流程，从 9 个信息源主动学习：
+
+**广筛**（子Agent并行）→ **深读**（主Agent逐条读原文）→ **落地评估**（自动过滤噪声）
+
+信息源：GitHub Trending · Hacker News · arXiv · 融资动态 · TechCrunch · 量子位 · Product Hunt · Papers With Code · 行业深度
+
+每条深读笔记包含：来源等级标签（摘要级/原文级/多源验证级）、二次验证、落地评估（相关模块/改动规模/优先级）。P0 条目自动进入实验队列。
+
+## 数据库
+
+单文件 SQLite，WAL 模式。
+
+| 表 | 用途 |
+|----|------|
+| `observations` | 观察、发现、教训 |
+| `decisions` | 决策记录（含被拒方案和理由） |
+| `session_summaries` | 会话摘要 |
+| `task_outcomes` | 任务执行结果 |
+| `experiments` | 进化实验 |
+| `embeddings` | 向量索引（可选） |
 
 ## 设计原则
 
-1. **零依赖** — 只需 Python 3.8+ 和 SQLite，不依赖 LangChain、LlamaIndex 或任何外部框架
-2. **全持久化** — 所有状态存 SQLite，Agent session 重启不丢失任何记忆和实验状态
-3. **可回滚** — 所有实验都可取消/回滚，不做不可逆操作
-4. **敢说不知道** — 样本不足时输出 `uncertain`，不强行下结论。一个成熟的系统敢说"证据不足"
-5. **贴着现实长** — Phase 1 只改模板和配置，不自动改代码。先证明闭环能跑通，再扩展范围
-6. **查询不 crash** — 所有查询操作失败时返回空值，不抛异常。写入操作失败时返回 None 并打印警告
+- **零依赖** — Python 3.8+ 和 SQLite，不依赖 LangChain / LlamaIndex
+- **全持久化** — 所有状态存 SQLite，重启不丢失
+- **可回滚** — 所有实验可取消/回滚
+- **敢说不知道** — 样本不足输出 `uncertain`
+- **查询不 crash** — 查询失败返回空值，写入失败返回 None
 
----
+## 适用场景
+
+适合任何需要从经验中学习的 Agent 系统。不绑定特定框架。
+
+已在 [OpenClaw](https://github.com/openclaw/openclaw) 生产环境验证。
+
+不适合：单轮对话机器人、纯 RAG 系统、需要分布式多节点共享记忆的场景。
+
+## FAQ
+
+**Q: 和 LangChain Memory / Mem0 的区别？**
+它们解决对话上下文记忆，本项目解决经验积累和自我改进。不冲突，可同时使用。
+
+**Q: 语义搜索怎么配？**
+可选功能，基于 SiliconFlow BGE-M3（免费）。设置 `SILICONFLOW_API_KEY` 环境变量后运行 `python3 modules/memory_db.py embed`。不配置自动降级为关键词搜索。
+
+**Q: 数据量大了会慢吗？**
+SQLite + FTS5 + WAL，10万条级别无压力。`memory_lru` 自动识别冷数据建议归档。
 
 ## 版本历史
 
-| 版本 | 日期 | 主要变更 |
-|------|------|----------|
-| v1~v5 | 2026-03-17~18 | 记忆系统 + 反馈闭环 + LRU + 子Agent统计 + Critic审查 |
-| v6 | 2026-03-20 | 检索层重构（三层分离 + 查询改写 + 时间衰减 + 动态阈值） |
-| v7 | 2026-03-28 | 进化执行器 + 归因验证器 + 策略引擎（从 Evolver 迁移核心思想，15000行JS→350行Python） |
-| v7.1 | 2026-03-28 | agent_bridge 自动录入 + 时间感知检索 + 自动标签提取 |
-| v7.2 | 2026-03-28 | 外部学习模块（两阶段深度学习 Skill） |
-
----
-
-## 常见问题
-
-**Q: 这个项目和 LangChain Memory / Mem0 有什么区别？**
-
-LangChain Memory 和 Mem0 解决的是"对话上下文记忆"——让 Agent 记住聊天历史。这个项目解决的是"经验积累和自我改进"——让 Agent 记住哪些方法有效、哪些失败了、下次该怎么改。两者不冲突，可以同时使用。
-
-**Q: 需要 GPU 吗？**
-
-不需要。所有核心功能基于规则和 SQLite，不依赖任何模型推理。唯一可选的 `memory_embedding.py` 调用外部 Embedding API（SiliconFlow），不配置就自动降级为关键词搜索。
-
-**Q: memory_embedding.py 的 SiliconFlow API 怎么配置？收费吗？**
-
-SiliconFlow 的 BGE-M3 embedding 模型是**免费的**，不消耗额度。配置方式：
-
-1. 注册 [SiliconFlow](https://siliconflow.cn)，获取 API Key
-2. 设置环境变量：
-```bash
-export SILICONFLOW_API_KEY=sk-your-api-key
-```
-3. 构建向量索引：
-```bash
-python3 modules/memory_db.py embed
-```
-
-不配置 `SILICONFLOW_API_KEY` 时，系统自动降级为 FTS5 关键词搜索，核心功能不受影响。语义搜索只是锦上添花，不是必需品。
-
-**Q: 数据量大了会不会慢？**
-
-SQLite + FTS5 + WAL 模式，10万条记录级别没有问题。`memory_lru` 模块会自动识别冷数据并建议归档，防止无限膨胀。
-
-**Q: 可以用 PostgreSQL / MySQL 替代 SQLite 吗？**
-
-当前不支持，但所有 SQL 都是标准语法（除了 FTS5），迁移成本不高。如果你需要多进程并发写入，建议 fork 后替换 `db_common.py`。
-
----
+| 版本 | 日期 | 变更 |
+|------|------|------|
+| v1~v5 | 2026-03-17 | 记忆系统 + 反馈闭环 + LRU + Critic审查 |
+| v6 | 2026-03-20 | 检索层重构（查询改写 + 时间衰减 + 动态阈值） |
+| v7 | 2026-03-28 | 进化执行器 + 归因验证器 + 策略引擎 |
+| v7.1 | 2026-03-28 | agent_bridge + 时间感知检索 |
+| v7.2 | 2026-03-28 | 外部学习模块 + 落地评估机制 |
 
 ## 致谢
 
-本项目的部分设计思想借鉴了以下开源项目（仅思想参考，未复制代码）：
+部分设计思想借鉴自以下项目（仅思想参考，未复制代码）：
 
-- **[Capability-Evolver](https://github.com/EvoMap/evolver)**（MIT）— 策略引擎中的 Strategy Presets、Signal Detection、Adaptive Reflection 机制受其启发。原项目是一个完整的 AI Agent 自我进化引擎，我们提取了其中 3 个核心思想并用 Python 重新实现。
-- **[FreeTodo](https://github.com/FreeU-group/FreeTodo)**（FreeU Community License, 基于 Apache 2.0）— 早期记忆系统的结构化存储设计参考了其任务上下文管理思路。
-
-感谢这些项目的作者和贡献者。
-
----
+- [Capability-Evolver](https://github.com/EvoMap/evolver)（MIT）— 策略预设、信号检测、自适应反思
+- [FreeTodo](https://github.com/FreeU-group/FreeTodo)（FreeU Community License）— 结构化任务上下文管理
 
 ## License
 
