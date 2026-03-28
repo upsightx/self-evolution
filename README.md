@@ -10,6 +10,9 @@
     <img src="https://img.shields.io/badge/storage-SQLite-lightgrey" alt="SQLite">
     <img src="https://img.shields.io/github/last-commit/upsightx/self-evolution" alt="Last Commit">
   </p>
+  <p align="center">
+    <b>English</b> | <a href="README_CN.md">中文</a>
+  </p>
 </p>
 
 ---
