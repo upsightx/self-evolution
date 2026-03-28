@@ -119,6 +119,7 @@ if __name__ == "__main__":
 | task_outcomes | 任务执行结果 | id (autoincrement) |
 | embeddings | 向量索引 | id, UNIQUE(source_table, source_id) |
 | decision_reviews | 决策回顾 | id, FK→decisions |
+| experiments | 进化实验（A/B对比） | id (autoincrement) |
 
 新增表前先确认是否能复用现有表。
 
@@ -133,6 +134,9 @@ if __name__ == "__main__":
 | model_router | 模型推荐 + 路由表 | 不做任务记录 |
 | agent_dispatch | 串联闭环（prepare/complete） | 不做具体分析 |
 | orchestrator | 调度 + 状态面板 | 不做具体业务逻辑 |
+| evolution_executor | 实验生命周期管理（创建/激活/记录/结论） | 不做因果判断、不自动改代码 |
+| causal_validator | 实验归因验证（有效/存疑/无效） | 不做 CRUD、不访问外部 API |
+| evolution_strategy | 策略选择 + 信号检测 + 自适应反思 | 不做实验管理、不做外部通信 |
 
 ## 10. 版本与变更
 

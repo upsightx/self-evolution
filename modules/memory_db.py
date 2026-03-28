@@ -502,3 +502,28 @@ Usage: memory_db.py <command> [args]
 
 if __name__ == "__main__":
     main()
+
+
+# ============ Class-based compatibility shim ============
+# Some callers do `from memory_db import MemoryDB`. This wraps the functional API.
+
+class MemoryDB:
+    """Thin wrapper around the module-level functional API for class-based callers."""
+
+    def add_observation(self, type, title, narrative=None, facts=None, concepts=None, **kwargs):
+        return add_observation(type, title, narrative=narrative, facts=facts, concepts=concepts, **kwargs)
+
+    def add_decision(self, title, decision, rejected_alternatives=None, rationale=None, **kwargs):
+        return add_decision(title, decision, rejected_alternatives=rejected_alternatives, rationale=rationale, **kwargs)
+
+    def search(self, query=None, type=None, limit=20, **kwargs):
+        return search(query=query, type=type, limit=limit, **kwargs)
+
+    def count(self, table="observations"):
+        return count_by_type(table)
+
+    def stats(self):
+        return stats()
+
+    def get(self, id):
+        return get(id)

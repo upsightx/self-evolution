@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-BASE = Path(__file__).resolve().parent.parent.parent
+BASE = Path('/root/.openclaw/workspace')
 MEMORY_DIR = BASE / 'memory'
 STRUCTURED_DIR = MEMORY_DIR / 'structured'
 REGISTRY_JSONL = MEMORY_DIR / 'file-registry.jsonl'
