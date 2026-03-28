@@ -6,6 +6,69 @@
 
 ---
 
+## 适用场景
+
+这套系统不绑定任何特定的 Agent 框架。只要你的 Agent 满足以下条件，就可以直接用：
+
+- 会执行任务（不管是写代码、搜索信息、还是调 API）
+- 任务有成功/失败的概念
+- 希望 Agent 能从历史中学习，而不是每次从零开始
+
+### 已验证的集成
+
+| 平台 | 集成方式 | 说明 |
+|------|----------|------|
+| **OpenClaw** | 通过心跳调度 + agent_bridge 自动录入 | 生产环境使用中，子Agent完成后自动录入结果 |
+
+### 可以集成但未验证的
+
+| 平台/框架 | 集成思路 |
+|-----------|----------|
+| **LangChain / LangGraph** | 在 Chain 的回调中调用 `agent_bridge.record_agent_result()` 录入结果 |
+| **AutoGen** | 在 Agent 的 `receive` 方法中录入任务结果 |
+| **CrewAI** | 在 Task 的 `callback` 中录入 |
+| **Dify / Coze** | 通过 webhook 或插件调用 CLI：`python3 agent_bridge.py record ...` |
+| **自研 Agent** | 直接 import 模块，在任务完成后调一行 `record_agent_result()` |
+| **定时脚本 / Cron** | 用 CLI 接口，不需要写 Python 代码 |
+
+### 不适合的场景
+
+- 单轮对话机器人（没有任务概念，不需要积累经验）
+- 纯 RAG 检索系统（这套系统解决的是"从自身经验中学习"，不是"从外部文档中检索"）
+- 需要分布式多节点共享记忆的场景（当前是单机 SQLite，不支持多进程并发写入）
+
+### 集成只需要 3 步
+
+```python
+# 1. 初始化
+from memory_db import init_db
+init_db()
+
+# 2. 每次任务完成后录入
+from agent_bridge import record_agent_result
+record_agent_result(
+    task_type="coding",      # 你的任务分类
+    model="gpt-4",           # 你用的模型
+    success=True,            # 成功还是失败
+    description="重构用户模块",  # 任务描述
+    critic_score=85,         # 可选：质量评分
+)
+
+# 3. 定期分析（可以用 cron、心跳、或手动）
+from evolution_strategy import detect_signals, resolve_strategy
+signals = detect_signals()       # 检测系统状态
+strategy = resolve_strategy()    # 获取当前推荐策略
+```
+
+数据库路径通过环境变量配置：
+```bash
+export SELF_EVOLUTION_DB=/path/to/your/memory.db
+```
+
+不设置则默认在模块目录下创建 `memory.db`。
+
+---
+
 ## 为什么需要这个？
 
 大多数 AI Agent 每次对话都是从零开始。它们不记得上次犯了什么错，不知道哪个模型更适合哪类任务，也不会从失败中总结教训。
@@ -381,6 +444,27 @@ python3 modules/evolution_strategy.py reflection-context
 | v1~v5 | 2026-03-17~18 | 记忆系统 + 反馈闭环 + LRU + 子Agent统计 + Critic审查 |
 | v6 | 2026-03-20 | 检索层重构（三层分离 + 查询改写 + 时间衰减 + 动态阈值） |
 | v7 | 2026-03-28 | 进化执行器 + 归因验证器 + 策略引擎（从 Evolver 迁移核心思想，15000行JS→350行Python） |
+| v7.1 | 2026-03-28 | agent_bridge 自动录入 + 时间感知检索 + 自动标签提取 |
+
+---
+
+## 常见问题
+
+**Q: 这个项目和 LangChain Memory / Mem0 有什么区别？**
+
+LangChain Memory 和 Mem0 解决的是"对话上下文记忆"——让 Agent 记住聊天历史。这个项目解决的是"经验积累和自我改进"——让 Agent 记住哪些方法有效、哪些失败了、下次该怎么改。两者不冲突，可以同时使用。
+
+**Q: 需要 GPU 吗？**
+
+不需要。所有核心功能基于规则和 SQLite，不依赖任何模型推理。唯一可选的 `memory_embedding.py` 调用外部 Embedding API（SiliconFlow），不配置就自动降级为关键词搜索。
+
+**Q: 数据量大了会不会慢？**
+
+SQLite + FTS5 + WAL 模式，10万条记录级别没有问题。`memory_lru` 模块会自动识别冷数据并建议归档，防止无限膨胀。
+
+**Q: 可以用 PostgreSQL / MySQL 替代 SQLite 吗？**
+
+当前不支持，但所有 SQL 都是标准语法（除了 FTS5），迁移成本不高。如果你需要多进程并发写入，建议 fork 后替换 `db_common.py`。
 
 ---
 
