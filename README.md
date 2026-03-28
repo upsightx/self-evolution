@@ -15,7 +15,7 @@ Self-Evolution 让 Agent 具备七种能力：
 3. **A/B 实验验证** — 把改进建议变成可回滚的实验，用数据判断是否有效
 4. **归因验证** — 防止被单次巧合误导，样本不足时敢说"不确定"
 5. **策略自适应** — 根据系统状态自动切换进化策略（激进/保守/修复）
-6. **外部学习** — 定期从 9 个信息源主动学习，产出结构化知识笔记
+6. **外部学习** — 定期从 8 个信息源主动学习，产出结构化知识笔记
 7. **冷热记忆管理** — 追踪记忆访问频率，自动建议归档冷数据
 
 ## 架构
@@ -67,7 +67,7 @@ evolution_executor 生成候选实验
 | `memory_store.py` | 持久化写入，标签/时间/任务类型过滤 |
 | `memory_retrieval.py` | 智能检索：查询改写、时间感知、动态阈值、时间衰减 |
 | `memory_service.py` | 统一接口：remember / recall / reflect |
-| `memory_embedding.py` | 可选语义搜索（SiliconFlow BGE-M3，免费） |
+| `memory_embedding.py` | 可选语义搜索，基于 [SiliconFlow](https://siliconflow.cn) BGE-M3 Embedding API（免费，无需 GPU）。不配置 API Key 时自动降级为 FTS5 关键词搜索 |
 | `memory_lru.py` | 冷热追踪，归档建议 |
 | `file_registry.py` | 文件/文档元信息台账 |
 | `db_common.py` | SQLite 连接管理（WAL 模式） |
@@ -165,11 +165,11 @@ export SELF_EVOLUTION_DB=/path/to/your/memory.db  # 默认在模块目录下
 
 ## 外部学习
 
-两阶段流程，从 9 个信息源主动学习：
+两阶段流程，从 8 个信息源主动学习：
 
 **广筛**（子Agent并行）→ **深读**（主Agent逐条读原文）→ **落地评估**（自动过滤噪声）
 
-信息源：GitHub Trending · Hacker News · arXiv · 融资动态 · TechCrunch · 量子位 · Product Hunt · Papers With Code · 行业深度
+信息源：GitHub Trending · Hacker News · arXiv · TechCrunch · 量子位 · Product Hunt · Papers With Code · 行业深度
 
 每条深读笔记包含：来源等级标签（摘要级/原文级/多源验证级）、二次验证、落地评估（相关模块/改动规模/优先级）。P0 条目自动进入实验队列。
 

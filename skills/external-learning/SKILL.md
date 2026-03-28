@@ -1,7 +1,7 @@
 ---
 name: external-learning
 description: |
-  外部学习工具。定期从外部信息源学习最新动态,包括 AI 论文、GitHub 热门项目、Hacker News、行业融资等。
+  外部学习工具。定期从外部信息源学习最新动态,包括 AI 论文、GitHub 热门项目、Hacker News、TechCrunch 等。
 
   **当以下情况时使用此 Skill**:
   (1) 心跳触发时,轮询外部信息源
@@ -27,7 +27,6 @@ description: |
 |--------|--------|--------|------|----------|
 | 1 | GitHub Trending | github | 每次必查 | references/github.md |
 | 1 | Hacker News | hn | 每次必查 | references/hackernews.md |
-| 2 | 融资动态 | financing | 每天 | references/financing.md |
 | 2 | TechCrunch/VentureBeat | techcrunch | 每天 | references/techcrunch.md |
 | 2 | 量子位/机器之心 | qbitai | 每天 | references/qbitai.md |
 | 3 | arXiv 论文 | arxiv | 每 2 天 | references/arxiv.md |
@@ -173,7 +172,6 @@ description: |
 ### 深读数量控制
 - 单次深读上限 **15 条**(避免 token 消耗过大)
 - 如果候选超过 15 条,只取 TOP 15
-- 融资类条目不需要深读原文(API 结构化数据已足够),直接整理即可
 
 ## 第三阶段:输出
 
@@ -186,8 +184,6 @@ description: |
 ## 深度笔记(N条)
 [逐条深读结果]
 
-## 融资速览(N条)
-[融资条目表格]
 
 ## 候选但未深读(N条)
 [分数 5-6.9 的条目,仅标题+URL+一句话,供后续按需查看]
@@ -200,7 +196,7 @@ description: |
 用 `feishu_create_doc` 创建文档:
 - **folder_token**: `<your_folder_token>`
 - **标题**: `外部学习笔记 YYYY-MM-DD`
-- 深度笔记用 callout 高亮,融资用表格,趋势用 callout
+- 深度笔记用 callout 高亮,趋势用 callout
 
 ### 通知决策
 **主动通知**(满足任一且在 08:00-23:00):
