@@ -112,6 +112,16 @@ self-evolution/
 
 ### 安装
 
+**方式一：OpenClaw 用户（推荐）**
+
+将本仓库链接发送给你的 OpenClaw Agent，它会自动完成安装和配置：
+
+```
+安装这个 skill：https://github.com/upsightx/self-evolution
+```
+
+**方式二：手动安装**
+
 ```bash
 git clone https://github.com/upsightx/self-evolution.git
 cd self-evolution

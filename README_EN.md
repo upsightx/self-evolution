@@ -114,6 +114,16 @@ self-evolution/
 
 ### Installation
 
+**Option 1: OpenClaw Users (Recommended)**
+
+Send this repo link to your OpenClaw Agent — it will handle installation and setup automatically:
+
+```
+Install this skill: https://github.com/upsightx/self-evolution
+```
+
+**Option 2: Manual**
+
 ```bash
 git clone https://github.com/upsightx/self-evolution.git
 cd self-evolution
