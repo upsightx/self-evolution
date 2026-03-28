@@ -291,7 +291,6 @@ SQLite + FTS5 + WAL handles 100k+ records comfortably. `memory_lru` automaticall
 ## Roadmap
 
 - [ ] `tests/` — Comprehensive test suite with CI
-- [ ] `pyproject.toml` — Proper packaging for `pip install`
 - [ ] Dashboard — Terminal UI for experiment monitoring
 - [ ] Multi-DB support — PostgreSQL adapter for team deployments
 - [ ] Plugin system — Custom signal detectors and strategy presets

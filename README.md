@@ -289,7 +289,6 @@ SQLite + FTS5 + WAL，10 万条级别无压力。`memory_lru` 自动识别冷数
 ## Roadmap
 
 - [ ] `tests/` — 完整测试套件 + CI
-- [ ] `pyproject.toml` — 标准打包，支持 `pip install`
 - [ ] Dashboard — 终端 UI，实验监控面板
 - [ ] 多数据库支持 — PostgreSQL 适配器，支持团队部署
 - [ ] 插件系统 — 自定义信号检测器和策略预设
