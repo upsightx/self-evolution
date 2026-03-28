@@ -484,6 +484,17 @@ SQLite + FTS5 + WAL 模式，10万条记录级别没有问题。`memory_lru` 模
 
 ---
 
+## 致谢
+
+本项目的部分设计思想借鉴了以下开源项目：
+
+- **[Capability-Evolver](https://github.com/EvoMap/evolver)**（MIT）— 策略引擎中的 Strategy Presets、Signal Detection、Adaptive Reflection 机制受其启发。原项目是一个完整的 AI Agent 自我进化引擎，我们提取了其中 3 个核心思想并用 Python 重新实现。
+- **[FreeTodo](https://github.com/FreeU-group/FreeTodo)**（MIT）— 早期记忆系统的结构化存储设计参考了其任务上下文管理方案。
+
+感谢这些项目的作者和贡献者。
+
+---
+
 ## License
 
 MIT
