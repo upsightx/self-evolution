@@ -458,6 +458,22 @@ LangChain Memory 和 Mem0 解决的是"对话上下文记忆"——让 Agent 记
 
 不需要。所有核心功能基于规则和 SQLite，不依赖任何模型推理。唯一可选的 `memory_embedding.py` 调用外部 Embedding API（SiliconFlow），不配置就自动降级为关键词搜索。
 
+**Q: memory_embedding.py 的 SiliconFlow API 怎么配置？收费吗？**
+
+SiliconFlow 的 BGE-M3 embedding 模型是**免费的**，不消耗额度。配置方式：
+
+1. 注册 [SiliconFlow](https://siliconflow.cn)，获取 API Key
+2. 设置环境变量：
+```bash
+export SILICONFLOW_API_KEY=sk-your-api-key
+```
+3. 构建向量索引：
+```bash
+python3 modules/memory_db.py embed
+```
+
+不配置 `SILICONFLOW_API_KEY` 时，系统自动降级为 FTS5 关键词搜索，核心功能不受影响。语义搜索只是锦上添花，不是必需品。
+
 **Q: 数据量大了会不会慢？**
 
 SQLite + FTS5 + WAL 模式，10万条记录级别没有问题。`memory_lru` 模块会自动识别冷数据并建议归档，防止无限膨胀。
