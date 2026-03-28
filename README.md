@@ -1,235 +1,319 @@
-# 🧬 Self-Evolution Engine for AI Agents
+<p align="center">
+  <h1 align="center">🧬 Self-Evolution Engine</h1>
+  <p align="center">
+    A lightweight framework that enables AI agents to learn from experience and continuously self-improve.
+  </p>
+  <p align="center">
+    <a href="https://github.com/upsightx/self-evolution/blob/main/LICENSE"><img src="https://img.shields.io/github/license/upsightx/self-evolution" alt="License"></a>
+    <img src="https://img.shields.io/badge/python-3.8%2B-blue" alt="Python 3.8+">
+    <img src="https://img.shields.io/badge/dependencies-zero-green" alt="Zero Dependencies">
+    <img src="https://img.shields.io/badge/storage-SQLite-lightgrey" alt="SQLite">
+    <img src="https://img.shields.io/github/last-commit/upsightx/self-evolution" alt="Last Commit">
+  </p>
+</p>
 
-让 AI Agent 从经验中学习、持续自我改进的轻量级框架。
+---
 
-Python 3.8+ · SQLite · 零外部依赖 · 全状态持久化
+## The Problem
 
-## 它解决什么问题
+Most AI agents start from scratch every session. They don't remember past mistakes, can't tell which model works best for which task, and never learn from failure.
 
-大多数 AI Agent 每次启动都从零开始——不记得上次犯了什么错，不知道哪个模型更适合哪类任务，也不会从失败中总结教训。
+Self-Evolution gives agents seven capabilities:
 
-Self-Evolution 让 Agent 具备七种能力：
+| # | Capability | What it does |
+|---|-----------|-------------|
+| 1 | **Structured Memory** | Persist experiences, decisions (with rejected alternatives), and lessons across restarts |
+| 2 | **Failure Pattern Analysis** | Automatically detect recurring failures and generate actionable improvement proposals |
+| 3 | **A/B Experiment Validation** | Turn proposals into rollback-safe experiments with real data-driven conclusions |
+| 4 | **Causal Attribution** | Prevent false positives from single-run flukes — outputs `uncertain` when sample size is insufficient |
+| 5 | **Adaptive Strategy** | Auto-switch evolution strategy (aggressive / conservative / repair) based on system health signals |
+| 6 | **External Learning** | Proactively scan 8+ sources (arXiv, HN, GitHub Trending, etc.) with two-stage filtering |
+| 7 | **Hot/Cold Memory Management** | Track access frequency, auto-suggest archival of cold data |
 
-1. **结构化记忆** — 持久化存储经验、决策和教训，重启不丢失
-2. **失败模式分析** — 自动识别重复出现的失败，生成改进建议
-3. **A/B 实验验证** — 把改进建议变成可回滚的实验，用数据判断是否有效
-4. **归因验证** — 防止被单次巧合误导，样本不足时敢说"不确定"
-5. **策略自适应** — 根据系统状态自动切换进化策略（激进/保守/修复）
-6. **外部学习** — 定期从 8 个信息源主动学习，产出结构化知识笔记
-7. **冷热记忆管理** — 追踪记忆访问频率，自动建议归档冷数据
+## Architecture
 
-## 架构
-
-三层架构，每层职责独立：
-
-```
-┌─────────────────────────────────────────────────┐
-│  进化层                                          │
-│  evolution_strategy · evolution_executor          │
-│  策略选择 · 信号检测 · 实验管理 · 自适应反思       │
-├─────────────────────────────────────────────────┤
-│  分析层                                          │
-│  feedback_loop · causal_validator                │
-│  失败模式分析 · 改进建议 · 归因验证               │
-├─────────────────────────────────────────────────┤
-│  记忆层                                          │
-│  memory_db · memory_store · memory_retrieval     │
-│  memory_service · memory_embedding · memory_lru  │
-│  结构化存储 · FTS5搜索 · 语义检索 · 冷热管理      │
-└─────────────────────────────────────────────────┘
-```
-
-## 核心闭环
+Three-layer design with clear separation of concerns:
 
 ```
-feedback_loop 发现失败模式
-        ↓
-evolution_executor 生成候选实验
-        ↓
-    创建实验 → 激活
-        ↓
-  任务执行时自动录入结果
-        ↓
-  causal_validator 样本够了自动验证
-        ↓
-  effective → 固化    uncertain → 继续观察    ineffective → 回滚
+┌──────────────────────────────────────────────────────┐
+│  Evolution Layer                                      │
+│  evolution_strategy · evolution_executor               │
+│  Strategy selection · Signal detection · Experiments   │
+│  Adaptive reflection frequency                         │
+├──────────────────────────────────────────────────────┤
+│  Analysis Layer                                       │
+│  feedback_loop · causal_validator                      │
+│  Failure pattern analysis · Improvement proposals      │
+│  4-dimension weighted attribution                      │
+├──────────────────────────────────────────────────────┤
+│  Memory Layer                                         │
+│  memory_db · memory_store · memory_retrieval           │
+│  memory_service · memory_embedding · memory_lru        │
+│  Structured storage · FTS5 search · Semantic retrieval │
+│  Hot/cold management · File registry                   │
+└──────────────────────────────────────────────────────┘
 ```
 
-`evolution_strategy` 持续监控系统信号，自动切换策略。
+### Core Loop
 
-## 模块一览
+```
+feedback_loop detects failure pattern
+        │
+        ▼
+evolution_executor generates candidate experiment
+        │
+        ▼
+    Create experiment → Activate
+        │
+        ▼
+    Task results recorded during execution
+        │
+        ▼
+    causal_validator runs when sample size is met
+        │
+        ▼
+    effective → persist    uncertain → continue    ineffective → rollback
+```
 
-### 记忆层
+`evolution_strategy` continuously monitors system signals and switches strategy accordingly.
 
-| 模块 | 功能 |
-|------|------|
-| `memory_db.py` | 结构化记忆数据库，FTS5 中英文双路径搜索 |
-| `memory_store.py` | 持久化写入，标签/时间/任务类型过滤 |
-| `memory_retrieval.py` | 智能检索：查询改写、时间感知、动态阈值、时间衰减 |
-| `memory_service.py` | 统一接口：remember / recall / reflect |
-| `memory_embedding.py` | 可选语义搜索，基于 [SiliconFlow](https://siliconflow.cn) BGE-M3 Embedding API（免费，无需 GPU）。不配置 API Key 时自动降级为 FTS5 关键词搜索 |
-| `memory_lru.py` | 冷热追踪，归档建议 |
-| `file_registry.py` | 文件/文档元信息台账 |
-| `db_common.py` | SQLite 连接管理（WAL 模式） |
+## Project Structure
 
-### 分析层
+```
+self-evolution/
+├── modules/
+│   ├── db_common.py            # SQLite connection manager (WAL mode)
+│   ├── memory_db.py            # Core memory DB — FTS5 dual-path search (CJK + Latin)
+│   ├── memory_store.py         # Write layer — tags, time, task-type filtering
+│   ├── memory_retrieval.py     # Smart retrieval — query rewriting, time decay, dynamic thresholds
+│   ├── memory_service.py       # Unified API: remember / recall / reflect
+│   ├── memory_embedding.py     # Optional semantic search via SiliconFlow BGE-M3 (free, no GPU)
+│   ├── memory_lru.py           # Access frequency tracking, archive suggestions
+│   ├── file_registry.py        # File/document metadata ledger
+│   ├── feedback_loop.py        # Task outcome recording, failure analysis, improvement proposals
+│   ├── causal_validator.py     # Pure-function attribution — 4 dimensions, 3-tier verdict
+│   ├── evolution_executor.py   # Experiment lifecycle: draft → active → concluded/cancelled
+│   ├── evolution_strategy.py   # 5 strategy presets, 6 signal types, adaptive reflection
+│   ├── agent_bridge.py         # One-call integration for sub-agent results
+│   └── DESIGN.md               # Internal design spec & coding conventions
+├── skills/
+│   └── external-learning/      # Two-stage learning skill (broad scan → deep read)
+│       ├── SKILL.md
+│       └── references/         # Source-specific templates (arXiv, HN, GitHub, etc.)
+├── DESIGN.md                   # High-level design document
+├── LICENSE                     # MIT
+└── README.md
+```
 
-| 模块 | 功能 |
-|------|------|
-| `feedback_loop.py` | 任务结果记录、失败模式分析、改进建议生成 |
-| `causal_validator.py` | 纯函数归因验证，4维度加权，三档判定 |
+**~4,350 lines of Python** across 14 modules. No external dependencies.
 
-### 进化层
+## Quick Start
 
-| 模块 | 功能 |
-|------|------|
-| `evolution_executor.py` | 实验生命周期：draft → active → concluded/cancelled |
-| `evolution_strategy.py` | 5种策略预设、6种信号检测、自适应反思频率 |
-| `agent_bridge.py` | 子Agent结果一键录入（task_outcome + observation + 实验） |
-
-### 配套 Skill
-
-| 目录 | 功能 |
-|------|------|
-| `skills/external-learning/` | 两阶段外部学习（广筛→深读），9个信息源，含落地评估 |
-
-## 快速开始
+### Installation
 
 ```bash
-# 初始化
+git clone https://github.com/upsightx/self-evolution.git
+cd self-evolution
+```
+
+No `pip install` needed — pure stdlib Python.
+
+### Initialize
+
+```bash
 python3 modules/memory_db.py init
+```
 
-# 录入任务结果
-python3 modules/feedback_loop.py record coding gpt-4 1 --notes "重构成功"
-python3 modules/feedback_loop.py record coding gpt-4 0 --notes "只输出意图没写代码"
+### Record Task Outcomes
 
-# 分析失败模式
+```bash
+# Record a success
+python3 modules/feedback_loop.py record coding gpt-4 1 --notes "Refactor succeeded"
+
+# Record a failure
+python3 modules/feedback_loop.py record coding gpt-4 0 --notes "Agent described plan but didn't execute"
+```
+
+### Analyze Failure Patterns
+
+```bash
 python3 modules/feedback_loop.py analyze
+```
 
-# 检测系统信号 & 策略
+### Check System Signals & Strategy
+
+```bash
 python3 modules/evolution_strategy.py signals
 python3 modules/evolution_strategy.py strategy
+```
 
-# 创建实验
+### Run an Experiment
+
+```bash
+# Create
 python3 modules/evolution_executor.py create \
   --source feedback_loop --task-type coding \
-  --problem "子Agent只描述计划不执行" \
-  --proposal "指令首段加强制执行提示"
+  --problem "Sub-agent describes plan but doesn't execute" \
+  --proposal "Add mandatory execution directive in first paragraph of prompt"
 
-# 验证实验
+# Validate (when enough samples collected)
 python3 modules/causal_validator.py validate 1
 ```
 
-Python 集成：
+### Python Integration
 
 ```python
 from agent_bridge import record_agent_result
 
-# 每次子Agent完成后调一行
+# One call after each sub-agent completes
 record_agent_result(
     task_type="coding",
     model="gpt-4",
     success=True,
-    description="重构用户模块",
+    description="Refactored user module",
     critic_score=85,
 )
 ```
 
-数据库路径通过环境变量配置：
+### Configuration
+
 ```bash
-export SELF_EVOLUTION_DB=/path/to/your/memory.db  # 默认在模块目录下
+# Custom database path (default: modules/ directory)
+export SELF_EVOLUTION_DB=/path/to/your/memory.db
+
+# Optional: enable semantic search (free SiliconFlow BGE-M3 API)
+export SILICONFLOW_API_KEY=your_key_here
+python3 modules/memory_db.py embed
 ```
 
-## 进化策略
+## Evolution Strategies
 
-系统根据运行信号自动选择策略：
+The system auto-selects a strategy based on runtime signals:
 
-| 策略 | 修复 | 优化 | 创新 | 触发条件 |
-|------|------|------|------|----------|
-| `balanced` | 20% | 30% | 50% | 系统健康 |
-| `innovate` | 5% | 15% | 80% | 停滞或修复循环 |
-| `harden` | 40% | 40% | 20% | 近期大改动 |
-| `repair_only` | 80% | 20% | 0% | 高失败率 |
-| `steady_state` | 60% | 30% | 10% | 进化饱和 |
+| Strategy | Fix | Optimize | Innovate | Trigger |
+|----------|-----|----------|----------|---------|
+| `balanced` | 20% | 30% | 50% | System healthy |
+| `innovate` | 5% | 15% | 80% | Stagnation or repair loop detected |
+| `harden` | 40% | 40% | 20% | Recent major changes |
+| `repair_only` | 80% | 20% | 0% | High failure rate |
+| `steady_state` | 60% | 30% | 10% | Evolution saturated |
 
-信号类型：`high_failure_rate` · `repair_loop` · `elevated_failure_rate` · `recent_big_change` · `capability_gap` · `stagnation` · `all_healthy`
+**Signal types:** `high_failure_rate` · `repair_loop` · `elevated_failure_rate` · `recent_big_change` · `capability_gap` · `stagnation` · `all_healthy`
 
-## 归因验证
+## Causal Attribution
 
-实验结论不靠感觉，靠工程规则：
+Experiment conclusions are data-driven, not gut-feel:
 
-- **样本门槛**：< 3 次 → `uncertain`
-- **4维度加权**：成功率(0.4) + 返工率(0.25) + Critic分(0.25) + 耗时(0.1)
-- **三档判定**：`effective` / `uncertain` / `ineffective`
-- **核心原则**：敢说"不确定"比乱自信强
+- **Sample threshold:** < 3 runs → `uncertain` (refuses to conclude)
+- **4-dimension weighted score:**
+  - Success rate (0.4) + Rework rate (0.25) + Critic score (0.25) + Duration (0.1)
+- **Three-tier verdict:** `effective` / `uncertain` / `ineffective`
+- **Design principle:** Saying "I don't know" beats false confidence
 
-## 外部学习
+## External Learning
 
-两阶段流程，从 8 个信息源主动学习：
+Two-stage pipeline scanning 8+ sources:
 
-**广筛**（子Agent并行）→ **深读**（主Agent逐条读原文）→ **落地评估**（自动过滤噪声）
+```
+Broad Scan (parallel sub-agents)
+    → Deep Read (main agent reads original sources)
+        → Landing Assessment (auto-filter noise)
+```
 
-信息源：GitHub Trending · Hacker News · arXiv · TechCrunch · 量子位 · Product Hunt · Papers With Code · 行业深度
+**Sources:** GitHub Trending · Hacker News · arXiv · TechCrunch · 量子位 · Product Hunt · Papers With Code · Industry Deep Dives
 
-每条深读笔记包含：来源等级标签（摘要级/原文级/多源验证级）、二次验证、落地评估（相关模块/改动规模/优先级）。P0 条目自动进入实验队列。
+Each deep-read note includes: source confidence level (summary / original / multi-source verified), secondary validation, and landing assessment (related modules / change scope / priority). P0 items auto-enter the experiment queue.
 
-## 数据库
+## Database Schema
 
-单文件 SQLite，WAL 模式。
+Single-file SQLite with WAL mode. Handles 100k+ records without performance issues.
 
-| 表 | 用途 |
-|----|------|
-| `observations` | 观察、发现、教训 |
-| `decisions` | 决策记录（含被拒方案和理由） |
-| `session_summaries` | 会话摘要 |
-| `task_outcomes` | 任务执行结果 |
-| `experiments` | 进化实验 |
-| `embeddings` | 向量索引（可选） |
+| Table | Purpose |
+|-------|---------|
+| `observations` | Observations, discoveries, lessons learned |
+| `decisions` | Decision records with rejected alternatives and rationale |
+| `session_summaries` | Session summaries for continuity |
+| `task_outcomes` | Task execution results (success/fail, model, scores) |
+| `experiments` | Evolution experiments with full lifecycle tracking |
+| `embeddings` | Vector index for semantic search (optional) |
 
-## 设计原则
+## Design Principles
 
-- **零依赖** — Python 3.8+ 和 SQLite，不依赖 LangChain / LlamaIndex
-- **全持久化** — 所有状态存 SQLite，重启不丢失
-- **可回滚** — 所有实验可取消/回滚
-- **敢说不知道** — 样本不足输出 `uncertain`
-- **查询不 crash** — 查询失败返回空值，写入失败返回 None
+- **Zero dependencies** — Python 3.8+ and SQLite only. No LangChain, no LlamaIndex.
+- **Full persistence** — All state in SQLite. Survives restarts, crashes, and redeployments.
+- **Rollback-safe** — Every experiment can be cancelled or rolled back.
+- **Honest uncertainty** — Insufficient samples → `uncertain`. Never over-claims.
+- **Crash-resistant queries** — Read operations return empty on failure; writes return `None` with warnings.
 
-## 适用场景
+## Use Cases
 
-适合任何需要从经验中学习的 Agent 系统。不绑定特定框架。
+Self-Evolution is framework-agnostic. It works with any agent system that can call Python functions.
 
-已在 [OpenClaw](https://github.com/openclaw/openclaw) 生产环境验证。
+**Good fit:**
+- Multi-agent orchestration systems that dispatch sub-agents
+- Long-running agent deployments that accumulate operational data
+- Any agent that would benefit from learning which prompts, models, or strategies work best
 
-不适合：单轮对话机器人、纯 RAG 系统、需要分布式多节点共享记忆的场景。
+**Not designed for:**
+- Single-turn chatbots (no operational history to learn from)
+- Pure RAG pipelines (use vector DBs instead)
+- Distributed multi-node shared memory (single SQLite file)
+
+**Production-validated** on [OpenClaw](https://github.com/openclaw/openclaw) with 4,300+ lines of Python running daily workloads.
 
 ## FAQ
 
-**Q: 和 LangChain Memory / Mem0 的区别？**
-它们解决对话上下文记忆，本项目解决经验积累和自我改进。不冲突，可同时使用。
+**Q: How does this differ from LangChain Memory / Mem0?**
+They solve conversational context memory (what was said). Self-Evolution solves experiential learning (what worked, what failed, and why). They're complementary — use both if needed.
 
-**Q: 语义搜索怎么配？**
-可选功能，基于 SiliconFlow BGE-M3（免费）。设置 `SILICONFLOW_API_KEY` 环境变量后运行 `python3 modules/memory_db.py embed`。不配置自动降级为关键词搜索。
+**Q: How do I enable semantic search?**
+Optional feature using [SiliconFlow](https://siliconflow.cn) BGE-M3 embeddings (free tier, no GPU required). Set `SILICONFLOW_API_KEY` and run `python3 modules/memory_db.py embed`. Without it, the system falls back to FTS5 keyword search — still effective for most use cases.
 
-**Q: 数据量大了会慢吗？**
-SQLite + FTS5 + WAL，10万条级别无压力。`memory_lru` 自动识别冷数据建议归档。
+**Q: Will it slow down at scale?**
+SQLite + FTS5 + WAL handles 100k+ records comfortably. `memory_lru` automatically identifies cold data and suggests archival to keep the working set lean.
 
-## 版本历史
+**Q: Can I use a different embedding provider?**
+`memory_embedding.py` is a thin wrapper (~200 lines). Swap the API call to any provider that returns float vectors. The rest of the system doesn't care.
 
-| 版本 | 日期 | 变更 |
-|------|------|------|
-| v1~v5 | 2026-03-17 | 记忆系统 + 反馈闭环 + LRU + Critic审查 |
-| v6 | 2026-03-20 | 检索层重构（查询改写 + 时间衰减 + 动态阈值） |
-| v7 | 2026-03-28 | 进化执行器 + 归因验证器 + 策略引擎 |
-| v7.1 | 2026-03-28 | agent_bridge + 时间感知检索 |
-| v7.2 | 2026-03-28 | 外部学习模块 + 落地评估机制 |
+## Roadmap
 
-## 致谢
+- [ ] `tests/` — Comprehensive test suite with CI
+- [ ] `pyproject.toml` — Proper packaging for `pip install`
+- [ ] Dashboard — Terminal UI for experiment monitoring
+- [ ] Multi-DB support — PostgreSQL adapter for team deployments
+- [ ] Plugin system — Custom signal detectors and strategy presets
 
-部分设计思想借鉴自以下项目（仅思想参考，未复制代码）：
+## Contributing
 
-- [Capability-Evolver](https://github.com/EvoMap/evolver)（MIT）— 策略预设、信号检测、自适应反思
-- [FreeTodo](https://github.com/FreeU-group/FreeTodo)（FreeU Community License）— 结构化任务上下文管理
+Contributions are welcome. Please read [`DESIGN.md`](DESIGN.md) for coding conventions before submitting PRs.
+
+```bash
+# Run tests before submitting
+python3 tests/run_all.py
+
+# Code style: follow existing patterns in modules/
+# - Type hints on all function signatures
+# - Docstrings with "What it does / What it doesn't do"
+# - CLI subcommand pattern for new modules
+```
+
+## Changelog
+
+| Version | Date | Changes |
+|---------|------|---------|
+| v1–v5 | 2026-03-17 | Memory system + feedback loop + LRU + Critic review |
+| v6 | 2026-03-20 | Retrieval layer rewrite (query rewriting + time decay + dynamic thresholds) |
+| v7 | 2026-03-28 | Evolution executor + causal validator + strategy engine |
+| v7.1 | 2026-03-28 | Agent bridge + time-aware retrieval |
+| v7.2 | 2026-03-28 | External learning module + landing assessment pipeline |
+
+## Acknowledgments
+
+Design ideas inspired by (concept reference only, no code copied):
+
+- [Capability-Evolver](https://github.com/EvoMap/evolver) (MIT) — Strategy presets, signal detection, adaptive reflection
+- [FreeTodo](https://github.com/FreeU-group/FreeTodo) (FreeU Community License) — Structured task context management
 
 ## License
 
-MIT
+[MIT](LICENSE) © 2026 UpsightX
