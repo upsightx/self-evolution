@@ -153,8 +153,8 @@ def _run_single_round(min_pattern_count: int, auto_execute: bool, max_changes: i
     # Step 3: Failure patterns
     print("\n🔍 Step 3: Failure patterns...")
     try:
-        from feedback_loop import analyze_failures, get_improvement_suggestions
-        patterns = analyze_failures(min_count=min_pattern_count)
+        from feedback_loop import analyze_patterns
+        patterns = analyze_patterns(min_samples=min_pattern_count)
         result["failure_patterns"] = patterns
         if patterns:
             print(f"  Found {len(patterns)} patterns:")
@@ -162,12 +162,19 @@ def _run_single_round(min_pattern_count: int, auto_execute: bool, max_changes: i
                 print(f"    {p.get('pattern', '')[:40]}: success={p.get('success_rate', 0):.0%}")
         result["actions_taken"].append(f"Patterns: {len(patterns)}")
 
-        # Generate suggestions
-        suggestions = get_improvement_suggestions(patterns[:max_changes])
-        result["improvement_suggestions"] = suggestions
-        if suggestions:
+        # Generate suggestions from patterns
+        if patterns:
+            suggestions = []
+            for p in patterns[:max_changes]:
+                suggestions.append({
+                    "task_type": p.get("task_type", "general"),
+                    "title": f"Fix {p.get('pattern', 'unknown')}",
+                    "description": p.get("suggestion", ""),
+                    "target_file": "",  # Would need LLM to determine
+                })
+            result["improvement_suggestions"] = suggestions
             print(f"  Generated {len(suggestions)} suggestions")
-        result["actions_taken"].append(f"Suggestions: {len(suggestions)}")
+        result["actions_taken"].append(f"Suggestions: {len(result['improvement_suggestions'])}")
     except Exception as e:
         print(f"  ⚠️ {e}")
 
