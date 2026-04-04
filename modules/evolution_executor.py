@@ -59,6 +59,79 @@ DANGEROUS_PATTERNS = [
     "socket.",
 ]
 
+
+def register_external_learning_proposal(
+    proposal_id: str,
+    summary: str,
+    target_module: str = "",
+    change_description: str = "",
+) -> dict:
+    """Register an external learning proposal as an evolution change.
+
+    Creates a pending entry in evolution_changes table for later execution.
+
+    Args:
+        proposal_id: Unique ID for the proposal (e.g., from external learning)
+        summary: Proposal summary
+        target_module: Target module to improve (e.g., 'curiosity_engine')
+        change_description: Human-readable description
+
+    Returns:
+        {
+            "success": bool,
+            "change_id": str or None,
+            "message": str,
+        }
+    """
+    _ensure_table()
+    db = get_db()
+
+    change_id = f"ext_{proposal_id}_{datetime.now().strftime('%Y%m%d')}"
+
+    try:
+        # Check if already exists
+        existing = db.execute(
+            "SELECT change_id FROM evolution_changes WHERE change_id = ?",
+            (change_id,),
+        ).fetchone()
+
+        if existing:
+            return {
+                "success": False,
+                "change_id": change_id,
+                "message": f"Proposal already registered: {change_id}",
+            }
+
+        # Insert as pending
+        db.execute(
+            """INSERT INTO evolution_changes
+               (change_id, task_type, suggestion, target_file, change_description, status)
+               VALUES (?, ?, ?, ?, ?, 'pending')""",
+            (change_id, "external_learning", summary, target_module, change_description),
+        )
+        db.commit()
+
+        print(f"[evolution_executor] ✅ Registered external proposal: {change_id}")
+        print(f"  Summary: {summary[:60]}...")
+        print(f"  Target: {target_module or 'TBD'}")
+
+        return {
+            "success": True,
+            "change_id": change_id,
+            "message": f"Proposal registered. Use apply_improvement() to execute.",
+        }
+
+    except Exception as e:
+        print(f"[evolution_executor] ❌ Failed to register: {e}")
+        return {
+            "success": False,
+            "change_id": None,
+            "message": str(e),
+        }
+    finally:
+        db.close()
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS evolution_changes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
