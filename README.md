@@ -99,6 +99,35 @@ CREATE TABLE task_outcomes (
 
 两者共用同一个 SQLite 数据库（`memory.db`），Self-Evolution 读取 X-Memory 的 `task_outcomes` 表进行能力分析。
 
+## 与 External Learning 的关系
+
+- **External Learning**：外部情报扫描器，从 arXiv、GitHub Trending、Hacker News、36kr 等 6 个信息源抓取最新技术动态
+- **Self-Evolution**：内部进化引擎，将外部学到的新知识转化为系统能力的提升
+
+**协作流程**：
+```
+External Learning 扫描外部情报
+    ↓ 发现高价值技术（如 MiroThinker 论文）
+生成学习报告到 memory/learning/
+    ↓
+Self-Evolution 的 curiosity_engine 读取报告
+    ↓ 评估落地可行性
+生成进化提案（proposal）
+    ↓
+feedback_loop 分析当前能力缺口
+    ↓
+evolution_executor 执行改进
+    ↓
+causal_validator 验证效果
+    ↓
+系统能力提升
+```
+
+**关键区别**：
+- External Learning 负责"看外面有什么"（信息输入）
+- Self-Evolution 负责"我需要什么、怎么改进"（内部成长）
+- 两者通过 `memory/learning/` 目录和 SQLite 数据库连接
+
 ## 更新日志
 
 ### 2026-04-04 — 目标驱动架构重写
