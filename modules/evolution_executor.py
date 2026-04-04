@@ -235,6 +235,169 @@ def apply_improvement(
         db.close()
 
 
+# ============ Docker Sandbox ============
+
+def run_in_sandbox(
+    script_content: str,
+    dependencies: list[str] | None = None,
+    timeout: int = 60,
+    image: str = "python:3.11-slim",
+) -> dict:
+    """Execute Python code in a Docker sandbox.
+
+    Args:
+        script_content: Python code to execute
+        dependencies: List of pip packages to install (e.g., ["requests", "numpy"])
+        timeout: Execution timeout in seconds
+        image: Docker image to use
+
+    Returns:
+        {
+            "success": bool,
+            "stdout": str,
+            "stderr": str,
+            "exit_code": int,
+            "message": str,
+        }
+    """
+    import subprocess
+    import tempfile
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="sandbox_"))
+    script_path = tmp_dir / "script.py"
+
+    try:
+        # Write script
+        script_path.write_text(script_content, encoding="utf-8")
+
+        # Build Docker run command
+        cmd = [
+            "docker", "run", "--rm",
+            "--network", "none",  # No network access for safety
+            "--memory", "512m",    # Memory limit
+            "--cpus", "1.0",       # CPU limit
+            "-v", f"{tmp_dir}:/workspace",
+            "-w", "/workspace",
+            image,
+            "bash", "-c",
+        ]
+
+        # Install dependencies if specified
+        install_cmd = ""
+        if dependencies:
+            install_cmd = f"pip install {' '.join(dependencies)} && "
+
+        # Execute script
+        exec_cmd = f"{install_cmd}python script.py"
+        cmd.append(exec_cmd)
+
+        print(f"[sandbox] Running in Docker ({image})...")
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+        return {
+            "success": result.returncode == 0,
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+            "exit_code": result.returncode,
+            "message": "Executed successfully" if result.returncode == 0 else f"Exit code: {result.returncode}",
+        }
+
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "stdout": "",
+            "stderr": f"Timeout after {timeout}s",
+            "exit_code": -1,
+            "message": f"Execution timed out after {timeout}s",
+        }
+    except FileNotFoundError:
+        return {
+            "success": False,
+            "stdout": "",
+            "stderr": "Docker not installed or not in PATH",
+            "exit_code": -1,
+            "message": "Docker not available",
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "stdout": "",
+            "stderr": str(e),
+            "exit_code": -1,
+            "message": str(e),
+        }
+    finally:
+        # Cleanup
+        try:
+            shutil.rmtree(tmp_dir)
+        except Exception:
+            pass
+
+
+def test_change_in_sandbox(
+    change_id: str,
+    test_script: str,
+    dependencies: list[str] | None = None,
+) -> dict:
+    """Test a previously applied change in Docker sandbox.
+
+    Args:
+        change_id: The change ID to test
+        test_script: Python test code to run
+        dependencies: Optional pip dependencies
+
+    Returns:
+        Test result dict (same format as run_in_sandbox)
+    """
+    _ensure_table()
+    db = get_db()
+
+    try:
+        # Get change info
+        row = db.execute(
+            "SELECT target_file, backup_path FROM evolution_changes WHERE change_id = ?",
+            (change_id,),
+        ).fetchone()
+
+        if not row:
+            return {
+                "success": False,
+                "stdout": "",
+                "stderr": f"Change {change_id} not found",
+                "exit_code": -1,
+                "message": f"Change {change_id} not found",
+            }
+
+        print(f"[sandbox] Testing change {change_id}...")
+        result = run_in_sandbox(test_script, dependencies=dependencies)
+
+        # Update verification status
+        db.execute(
+            "UPDATE evolution_changes SET verified_at = datetime('now'), verdict = ? WHERE change_id = ?",
+            ("passed" if result["success"] else "failed", change_id),
+        )
+        db.commit()
+
+        result["change_id"] = change_id
+        return result
+
+    except Exception as e:
+        return {
+            "success": False,
+            "stdout": "",
+            "stderr": str(e),
+            "exit_code": -1,
+            "message": str(e),
+        }
+    finally:
+        db.close()
+
+
 def rollback(change_id: str) -> dict:
     """Rollback a previously applied change.
 
