@@ -146,14 +146,21 @@ def apply_improvement(
     suggestion: str,
     target_file: str,
     change_description: str = "",
+    max_iterations: int = 3,
+    test_script: str | None = None,
 ) -> dict:
-    """Apply an improvement to a target file.
+    """Apply an improvement to a target file with interactive feedback loop.
+
+    Inspired by MiroThinker's interactive scaling: instead of single-shot
+    patch generation, iterate: generate → test → feedback → refine.
 
     Args:
         task_type: Task type being improved (e.g., 'coding')
         suggestion: Improvement suggestion from feedback_loop
         target_file: Path to the file to modify (relative to workspace)
         change_description: Human-readable description of the change
+        max_iterations: Max refinement iterations (default 3)
+        test_script: Optional test code to run in sandbox after each iteration
 
     Returns:
         {
@@ -161,6 +168,8 @@ def apply_improvement(
             "change_id": str,
             "backup_path": str or None,
             "message": str,
+            "iterations": int,
+            "test_results": list,
         }
     """
     _ensure_table()
@@ -168,6 +177,8 @@ def apply_improvement(
 
     change_id = f"chg_{datetime.now().strftime('%Y%m%d%H%M%S')}"
     target_path = WORKSPACE / target_file
+    iterations_used = 0
+    test_results = []
 
     try:
         if not target_path.exists():
@@ -176,60 +187,122 @@ def apply_improvement(
                 "change_id": change_id,
                 "backup_path": None,
                 "message": f"Target file not found: {target_path}",
+                "iterations": 0,
+                "test_results": [],
             }
 
         # Read current content
         current_content = target_path.read_text(encoding="utf-8")
+        original_content = current_content
 
-        # Generate patch with LLM
-        print(f"[evolution_executor] Generating patch for '{suggestion}'...")
-        new_content = _generate_patch_with_llm(suggestion, current_content, task_type)
-
-        if not new_content:
-            return {
-                "success": False,
-                "change_id": change_id,
-                "backup_path": None,
-                "message": "LLM patch generation failed",
-            }
-
-        # Create backup
+        # Create backup (once, before any changes)
         backup_dir = WORKSPACE / "memory" / "evolution_backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
         backup_name = f"{target_path.stem}_{datetime.now().strftime('%Y%m%d%H%M%S')}{target_path.suffix}"
         backup_path = backup_dir / backup_name
         shutil.copy2(target_path, backup_path)
 
-        # Apply change
-        target_path.write_text(new_content, encoding="utf-8")
+        # Interactive loop: generate → test → feedback → refine
+        refined_suggestion = suggestion
+        for iteration in range(1, max_iterations + 1):
+            iterations_used = iteration
+            print(f"[evolution_executor] Iteration {iteration}/{max_iterations}...")
 
-        # Record in database
-        db.execute(
-            """INSERT INTO evolution_changes
-               (change_id, task_type, suggestion, target_file, change_description, backup_path)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (change_id, task_type, suggestion, target_file, change_description, str(backup_path)),
-        )
-        db.commit()
+            # Generate patch with LLM
+            print(f"  Generating patch for '{refined_suggestion}'...")
+            new_content = _generate_patch_with_llm(refined_suggestion, current_content, task_type)
 
-        print(f"[evolution_executor] ✅ Applied change #{change_id}")
-        print(f"  File: {target_file}")
-        print(f"  Backup: {backup_path}")
+            if not new_content:
+                test_results.append({"iteration": iteration, "status": "llm_failed"})
+                print(f"  ⚠️ LLM generation failed")
+                break
 
-        return {
-            "success": True,
-            "change_id": change_id,
-            "backup_path": str(backup_path),
-            "message": f"Change applied successfully. Backup at {backup_path}",
-        }
+            # Apply change temporarily
+            target_path.write_text(new_content, encoding="utf-8")
+
+            # Test in sandbox if test_script provided
+            test_passed = True
+            if test_script:
+                print(f"  Testing in sandbox...")
+                sandbox_result = run_in_sandbox(test_script)
+                test_results.append({
+                    "iteration": iteration,
+                    "status": "passed" if sandbox_result["success"] else "failed",
+                    "stderr": sandbox_result["stderr"][:200],
+                })
+                if not sandbox_result["success"]:
+                    test_passed = False
+                    print(f"  ❌ Test failed: {sandbox_result['stderr'][:100]}")
+                    # Feed back error to LLM for next iteration
+                    refined_suggestion = f"""
+Previous attempt failed with error:
+{sandbox_result['stderr'][:500]}
+
+Original suggestion: {suggestion}
+
+Please fix the issue and regenerate the patch.
+"""
+                    current_content = new_content  # Use last attempt as base for refinement
+                    continue
+                else:
+                    print(f"  ✅ Test passed")
+                    break  # Success, exit loop
+            else:
+                # No test script, assume success
+                print(f"  ✅ Patch generated (no test)")
+                break
+
+        # Final result
+        if test_passed and new_content:
+            # Record in database
+            db.execute(
+                """INSERT INTO evolution_changes
+                   (change_id, task_type, suggestion, target_file, change_description, backup_path)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (change_id, task_type, suggestion, target_file, change_description, str(backup_path)),
+            )
+            db.commit()
+
+            print(f"[evolution_executor] ✅ Applied change #{change_id} ({iterations_used} iteration(s))")
+            print(f"  File: {target_file}")
+            print(f"  Backup: {backup_path}")
+
+            return {
+                "success": True,
+                "change_id": change_id,
+                "backup_path": str(backup_path),
+                "message": f"Change applied in {iterations_used} iteration(s). Backup at {backup_path}",
+                "iterations": iterations_used,
+                "test_results": test_results,
+            }
+        else:
+            # Rollback to original
+            target_path.write_text(original_content, encoding="utf-8")
+            print(f"[evolution_executor] ❌ All iterations failed, rolled back")
+
+            return {
+                "success": False,
+                "change_id": change_id,
+                "backup_path": str(backup_path),
+                "message": f"Failed after {iterations_used} iteration(s). Rolled back.",
+                "iterations": iterations_used,
+                "test_results": test_results,
+            }
 
     except Exception as e:
         print(f"[evolution_executor] ❌ Failed: {e}")
+        # Rollback on exception
+        try:
+            target_path.write_text(original_content, encoding="utf-8")
+        except:
+            pass
         return {
             "success": False,
             "change_id": change_id,
             "backup_path": None,
             "message": str(e),
+            "iterations": iterations_used,
+            "test_results": test_results,
         }
     finally:
         db.close()
