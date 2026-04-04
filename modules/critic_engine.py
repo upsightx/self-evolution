@@ -46,15 +46,19 @@ UNSUITABLE_ARCHS = [
 ]
 
 # Keywords indicating pure news/financing (not actionable)
+# Note: External learning already filters these, kept for defense-in-depth
 NEWS_KEYWORDS = [
     "funding", "funded", "raises", "raised", "series", "investment",
     "融资", "轮", "估值", "领投", "跟投", "战略投资",
-    "acquisition", "acquired", "并购", "ipo", "listing", "上市",
 ]
 
 
 def is_pure_news(summary: str) -> bool:
-    """Check if proposal is pure news/financing (not actionable)."""
+    """Check if proposal is pure news/financing.
+
+    Note: External learning should already filter these.
+    This is a defense-in-depth check.
+    """
     summary_lower = summary.lower()
     return any(kw.lower() in summary_lower for kw in NEWS_KEYWORDS)
 
@@ -181,13 +185,14 @@ def critical_review(proposal: dict) -> dict:
     verdict = "APPROVE"
     questions = []
 
-    # Rule 0: Filter pure news/financing
+    # Rule 0: Defense-in-depth news filter (external learning should already filter)
     if is_pure_news(summary):
-        return {
-            "verdict": "REJECT",
-            "critique_points": ["❌ REJECT: Pure news/financing, not actionable."],
-            "questions_for_builder": [],
-        }
+        critique_points.append(
+            "⚠️ WARNING: Appears to be news/financing. External learning should have filtered this."
+        )
+        # Don't reject outright; let human decide
+        if verdict == "APPROVE":
+            verdict = "APPROVE_WITH_CAUTION"
 
     # Rule 1: Resource fit (4GB RAM, 2 cores, no GPU)
     fits, reason = check_resource_fit(resources)
