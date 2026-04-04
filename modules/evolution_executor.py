@@ -33,6 +33,32 @@ from db_common import get_db, DB_PATH
 # Workspace root
 WORKSPACE = Path(__file__).parent.parent
 
+# Protected files that require manual approval
+PROTECTED_FILES = {
+    "X记忆/memory_db.py",
+    "X记忆/memory_store.py",
+    "X记忆/memory_retrieval.py",
+    "X记忆/memory_service.py",
+    "self-evolution/modules/goal_tree.py",
+    "self-evolution/modules/capability_model.py",
+    "self-evolution/modules/feedback_loop.py",
+    "self-evolution/modules/causal_validator.py",
+    "self-evolution/modules/auto_evolve.py",
+    ".gitignore",
+    "openclaw.json",
+}
+
+# Dangerous operations to block
+DANGEROUS_PATTERNS = [
+    "os.remove(",
+    "os.unlink(",
+    "shutil.rmtree(",
+    "subprocess.run(",
+    "urllib.request",
+    "requests.",
+    "socket.",
+]
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS evolution_changes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -141,6 +167,37 @@ Return the full modified code below:
     return None
 
 
+def _check_safety(target_file: str, new_content: str) -> dict:
+    """Check if the change is safe to apply.
+
+    Args:
+        target_file: Path to the file being modified
+        new_content: New content to write
+
+    Returns:
+        {
+            "safe": bool,
+            "reason": str,
+        }
+    """
+    # Check 1: Protected files
+    if target_file in PROTECTED_FILES:
+        return {
+            "safe": False,
+            "reason": f"Protected file '{target_file}' requires manual approval",
+        }
+
+    # Check 2: Dangerous operations
+    for pattern in DANGEROUS_PATTERNS:
+        if pattern in new_content:
+            return {
+                "safe": False,
+                "reason": f"Contains dangerous operation: '{pattern}'",
+            }
+
+    return {"safe": True, "reason": "Passed safety check"}
+
+
 def apply_improvement(
     task_type: str,
     suggestion: str,
@@ -219,6 +276,22 @@ def apply_improvement(
 
             # Apply change temporarily
             target_path.write_text(new_content, encoding="utf-8")
+
+            # Safety check
+            safety = _check_safety(target_file, new_content)
+            if not safety["safe"]:
+                test_results.append({"iteration": iteration, "status": "blocked", "reason": safety["reason"]})
+                print(f"  🛑 Safety check failed: {safety['reason']}")
+                # Rollback
+                target_path.write_text(original_content, encoding="utf-8")
+                return {
+                    "success": False,
+                    "change_id": change_id,
+                    "backup_path": str(backup_path),
+                    "message": f"Safety check failed: {safety['reason']}",
+                    "iterations": iteration,
+                    "test_results": test_results,
+                }
 
             # Test in sandbox if test_script provided
             test_passed = True
