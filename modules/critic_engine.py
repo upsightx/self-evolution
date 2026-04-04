@@ -27,6 +27,30 @@ if str(_modules_path) not in sys.path:
 # Heavy dependencies that may not fit resource-constrained environments
 HEAVY_DEPS = {"torch", "tensorflow", "cuda", "transformers", "pytorch"}
 
+# Keywords that indicate pure news/financing (not actionable tech proposals)
+NEWS_KEYWORDS = [
+    "funding", "funded", "raises", "raised", "series", "investment",
+    "融资", "轮", "估值", "领投", "跟投", "战略投资",
+    "acquisition", "acquired", "并购",
+    "ipo", "listing", "上市",
+]
+
+
+def is_pure_news(summary: str) -> bool:
+    """Check if the proposal is pure news/financing (not actionable).
+
+    Args:
+        summary: Proposal summary
+
+    Returns:
+        True if this is pure news (should be filtered out)
+    """
+    summary_lower = summary.lower()
+    for keyword in NEWS_KEYWORDS:
+        if keyword.lower() in summary_lower:
+            return True
+    return False
+
 
 def check_memory_overlap(topic: str, summary: str) -> bool:
     """Check if similar work already exists in X-Memory.
@@ -95,9 +119,26 @@ def critical_review(proposal: dict) -> dict:
     """
     print(f"👨\u200d⚖️ Critic Engine: Reviewing proposal '{proposal.get('id', 'unknown')}'...")
 
+    summary = proposal.get("summary", "")
     critique_points = []
     verdict = "APPROVE"
     questions = []
+
+    # Rule 0: Filter pure news/financing (not actionable tech proposals)
+    if is_pure_news(summary):
+        critique_points.append(
+            "❌ REJECT: Pure news/financing. Not an actionable technical proposal."
+        )
+        verdict = "REJECT"
+        result = {
+            "verdict": verdict,
+            "critique_points": critique_points,
+            "questions_for_builder": questions,
+        }
+        print(f"  📝 Critique Result: {result['verdict']}")
+        for point in result["critique_points"]:
+            print(f"     {point}")
+        return result
 
     # Rule 1: Check for redundancy (don't reinvent the wheel)
     summary = proposal.get("summary", "")
