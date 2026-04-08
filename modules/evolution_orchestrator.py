@@ -323,53 +323,47 @@ def heartbeat() -> dict:
     actions = []
     timestamp = datetime.now().isoformat()
 
-    # 1. Collect signals from feedback_loop
+    # 1. Run capability detection (replaces old feedback_loop)
     try:
-        from feedback_loop import analyze_patterns
-        patterns = analyze_patterns(min_samples=3, auto_write_memory=False)
-        if patterns:
-            for p in patterns[:5]:
-                ingest_signal(
-                    signal_type="task_failure",
-                    source_id=f"{p.get('task_type', '')}_{p.get('model', '')}",
-                    task_type=p.get("task_type", ""),
-                    severity=p.get("failure_rate", 0.5),
-                )
-            actions.append(f"Ingested {len(patterns)} failure patterns as signals")
+        from capability_detector import detect_all
+        detection = detect_all()
+        
+        # Ingest missing capabilities as high-severity signals
+        for m in detection.get("missing", []):
+            ingest_signal(
+                signal_type="capability_missing",
+                source_id=m.get("task_type", ""),
+                task_type=m.get("task_type", ""),
+                severity=1.0,
+            )
+        
+        # Ingest struggling capabilities
+        for s in detection.get("struggling", []):
+            ingest_signal(
+                signal_type="capability_struggling",
+                source_id=f"{s.get('task_type', '')}_{s.get('model', '')}",
+                task_type=s.get("task_type", ""),
+                severity=1.0 - s.get("success_rate", 0.5),
+            )
+        
+        # Ingest degradation signals
+        for d in detection.get("degrading", []):
+            ingest_signal(
+                signal_type="capability_degrading",
+                source_id=f"{d.get('task_type', '')}_{d.get('model', '')}",
+                task_type=d.get("task_type", ""),
+                severity=d.get("drop", 0.3),
+            )
+        
+        n_issues = len(detection.get("missing", [])) + len(detection.get("struggling", [])) + len(detection.get("degrading", []))
+        n_good = len(detection.get("reliable", [])) + len(detection.get("strengths", []))
+        if n_issues or n_good:
+            actions.append(f"Capability scan: {n_issues} issues, {n_good} reliable")
+        if detection.get("recommendations"):
+            for rec in detection["recommendations"][:3]:
+                actions.append(f"  → {rec}")
     except Exception as e:
-        actions.append(f"Signal collection error: {e}")
-
-    # 2. Collect signals from capability_model
-    try:
-        from capability_model import get_weaknesses
-        weaknesses = get_weaknesses(threshold=60.0)
-        if weaknesses:
-            for w in weaknesses[:3]:
-                ingest_signal(
-                    signal_type="capability_gap",
-                    source_id=w.get("name", ""),
-                    task_type=w.get("name", ""),
-                    severity=max(0, (70 - w.get("score", 50)) / 100),
-                )
-            actions.append(f"Ingested {len(weaknesses)} capability gaps as signals")
-    except Exception as e:
-        actions.append(f"Capability scan error: {e}")
-
-    # 2b. Collect success patterns (what's working well)
-    try:
-        from feedback_loop import analyze_success_patterns
-        successes = analyze_success_patterns(min_samples=3)
-        if successes:
-            for s in successes[:3]:
-                ingest_signal(
-                    signal_type="success_pattern",
-                    source_id=f"{s.get('task_type', '')}_{s.get('model', '')}",
-                    task_type=s.get("task_type", ""),
-                    severity=0.1,  # low severity = good thing, just record it
-                )
-            actions.append(f"Recorded {len(successes)} success patterns")
-    except Exception as e:
-        pass  # success patterns are nice-to-have, don't report errors
+        actions.append(f"Capability detection error: {e}")
 
     # 3. Route signals to proposals
     try:

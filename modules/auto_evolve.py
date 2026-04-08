@@ -204,28 +204,36 @@ def _run_single_round(min_pattern_count: int, auto_execute: bool, max_changes: i
     except Exception as e:
         print(f"  ⚠️ {e}")
 
-    # Step 3: Failure patterns
-    print("\n🔍 Step 3: Failure patterns...")
+    # Step 3: Capability detection (replaces old failure pattern analysis)
+    print("\n🔍 Step 3: Capability detection...")
     try:
-        from feedback_loop import analyze_patterns
-        patterns = analyze_patterns(min_samples=min_pattern_count)
-        result["failure_patterns"] = patterns
-        if patterns:
-            print(f"  Found {len(patterns)} patterns:")
-            for p in patterns[:3]:
-                print(f"    {p.get('pattern', '')[:40]}: success={p.get('success_rate', 0):.0%}")
-        result["actions_taken"].append(f"Patterns: {len(patterns)}")
+        from capability_detector import detect_all
+        detection = detect_all()
+        
+        # Combine missing + struggling as actionable items
+        issues = detection.get("missing", []) + detection.get("struggling", [])
+        result["failure_patterns"] = issues
+        if issues:
+            print(f"  Found {len(issues)} capability issues:")
+            for item in issues[:3]:
+                print(f"    {item['task_type']}/{item['model']}: {item['success_rate']:.0%} ({item['total']} samples)")
+        
+        if detection.get("recommendations"):
+            print(f"  Recommendations:")
+            for rec in detection["recommendations"][:3]:
+                print(f"    {rec}")
+        
+        result["actions_taken"].append(f"Issues: {len(issues)}")
 
-        # Generate suggestions from patterns
-        if patterns:
+        # Generate suggestions from capability issues
+        if issues:
             suggestions = []
-            for p in patterns[:max_changes]:
-                # Map task_type to likely target files
-                target = _resolve_target_file(p.get("task_type", "general"), p.get("pattern", ""))
+            for item in issues[:max_changes]:
+                target = _resolve_target_file(item.get("task_type", "general"), "")
                 suggestions.append({
-                    "task_type": p.get("task_type", "general"),
-                    "title": f"Fix {p.get('pattern', 'unknown')}",
-                    "description": p.get("suggestion", "") or f"Address failure pattern: {p.get('pattern', '')}",
+                    "task_type": item.get("task_type", "general"),
+                    "title": f"Fix {item['task_type']}/{item['model']} ({item['success_rate']:.0%})",
+                    "description": f"Capability issue: {item['task_type']} at {item['success_rate']:.0%} success rate",
                     "target_file": target,
                 })
             result["improvement_suggestions"] = suggestions
