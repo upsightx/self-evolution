@@ -4,8 +4,9 @@ Learning Conversion Tracker — 学习转化追踪器。
 
 职责：
 - 追踪外部学习内容是否转化为实际进化变更
-- 对比 observations（学习记录）和 evolution_changes（变更记录）
+- 对比 observations（学习记录）和 proposals（提案记录）
 - 计算学习转化率
+- Legacy: 也读 evolution_changes 作为兼容（只读）
 """
 from __future__ import annotations
 
@@ -52,22 +53,42 @@ def get_learning_items(days: int = 30) -> list[dict]:
 
 
 def _get_evolution_changes(days: int = 30) -> list[dict]:
-    """获取最近 N 天的进化变更记录。"""
+    """获取最近 N 天的进化变更记录。优先读 proposals，fallback 读 legacy evolution_changes（只读）。"""
     db = get_db()
     cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    results = []
+
+    # Primary: proposals table
     try:
         rows = db.execute(
-            "SELECT change_id, task_type, suggestion, change_description, verdict, applied_at\n"
-            "               FROM evolution_changes\n"
-            "               WHERE applied_at >= ?\n"
-            "               ORDER BY applied_at DESC",
+            """SELECT proposal_id as change_id, category as task_type,
+                      summary as suggestion, title as change_description,
+                      status as verdict, created_at as applied_at
+               FROM proposals WHERE created_at >= ?
+               ORDER BY created_at DESC""",
             (cutoff,)
         ).fetchall()
-        db.close()
-        return [dict(r) for r in rows]
+        results.extend(dict(r) for r in rows)
     except Exception:
-        db.close()
-        return []
+        pass
+
+    # Legacy fallback: evolution_changes (read-only)
+    try:
+        rows = db.execute(
+            """SELECT change_id, task_type, suggestion, change_description, verdict, applied_at
+               FROM evolution_changes WHERE applied_at >= ?
+               ORDER BY applied_at DESC""",
+            (cutoff,)
+        ).fetchall()
+        existing_ids = {r["change_id"] for r in results}
+        for r in rows:
+            if r["change_id"] not in existing_ids:
+                results.append(dict(r))
+    except Exception:
+        pass
+
+    db.close()
+    return results
 
 
 def _match_learning_to_changes(learning_item: dict, changes: list[dict]) -> list[dict]:

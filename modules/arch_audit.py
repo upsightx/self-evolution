@@ -54,10 +54,12 @@ def audit() -> dict:
             pass
 
     # 3. Governor bypass rate
+    _db_reachable = False
     try:
         from db_common import get_db
         db = get_db()
         total = db.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
+        _db_reachable = True
         with_lineage = db.execute("SELECT COUNT(DISTINCT observation_id) FROM memory_lineage").fetchone()[0]
         db.close()
         if total > 10:
@@ -66,20 +68,21 @@ def audit() -> dict:
             if rate > 50:
                 warnings.append(f"Governor bypass: {rate}% observations lack lineage ({bypass}/{total})")
     except Exception as e:
-        warnings.append(f"Lineage audit skipped: {e}")
+        issues.append(f"DB unreachable — audit incomplete: {e}")
 
     # 4. Legacy evolution_changes writes (should be read-only)
-    try:
-        from db_common import get_db
-        db = get_db()
-        recent = db.execute(
-            "SELECT COUNT(*) FROM evolution_changes WHERE applied_at > datetime('now', '-1 day')"
-        ).fetchone()[0]
-        db.close()
-        if recent > 0:
-            warnings.append(f"Legacy table: {recent} recent writes to evolution_changes (should be read-only)")
-    except Exception:
-        pass
+    if _db_reachable:
+        try:
+            from db_common import get_db
+            db = get_db()
+            recent = db.execute(
+                "SELECT COUNT(*) FROM evolution_changes WHERE applied_at > datetime('now', '-1 day')"
+            ).fetchone()[0]
+            db.close()
+            if recent > 0:
+                warnings.append(f"Legacy table: {recent} recent writes to evolution_changes (should be read-only)")
+        except Exception:
+            pass
 
     return {"healthy": len(issues) == 0, "issues": issues, "warnings": warnings}
 
