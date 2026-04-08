@@ -84,7 +84,21 @@ def audit() -> dict:
         except Exception:
             pass
 
-    return {"healthy": len(issues) == 0, "issues": issues, "warnings": warnings}
+    # 5. Schema version
+    schema_version = None
+    if _db_reachable:
+        try:
+            from db_common import get_db
+            db = get_db()
+            row = db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
+            schema_version = row[0] if row else None
+            db.close()
+            if schema_version is None:
+                warnings.append("No schema_migrations table — run schema versioning")
+        except Exception:
+            pass
+
+    return {"healthy": len(issues) == 0, "issues": issues, "warnings": warnings, "schema_version": schema_version}
 
 
 if __name__ == "__main__":
@@ -92,6 +106,8 @@ if __name__ == "__main__":
     result = audit()
     icon = "✅" if result["healthy"] else "❌"
     print(f"{icon} Architecture health: {'healthy' if result['healthy'] else 'issues found'}")
+    if result.get("schema_version"):
+        print(f"  📋 Schema version: v{result['schema_version']}")
     for i in result["issues"]:
         print(f"  ❌ {i}")
     for w in result["warnings"]:
