@@ -67,70 +67,59 @@ def register_external_learning_proposal(
     target_module: str = "",
     change_description: str = "",
 ) -> dict:
-    """Register an external learning proposal as an evolution change.
+    """Register an external learning proposal.
 
-    Creates a pending entry in evolution_changes table for later execution.
+    Delegates to proposal_lifecycle_manager (single source of truth).
+    Legacy: previously wrote to evolution_changes, now uses proposals table.
 
     Args:
-        proposal_id: Unique ID for the proposal (e.g., from external learning)
+        proposal_id: Unique ID for the proposal
         summary: Proposal summary
-        target_module: Target module to improve (e.g., 'curiosity_engine')
+        target_module: Target module to improve
         change_description: Human-readable description
 
     Returns:
-        {
-            "success": bool,
-            "change_id": str or None,
-            "message": str,
-        }
+        {"success": bool, "change_id": str or None, "message": str}
     """
-    _ensure_table()
-    db = get_db()
-
     change_id = f"ext_{proposal_id}_{datetime.now().strftime('%Y%m%d')}"
 
     try:
-        # Check if already exists
-        existing = db.execute(
-            "SELECT change_id FROM evolution_changes WHERE change_id = ?",
-            (change_id,),
-        ).fetchone()
-
-        if existing:
-            return {
-                "success": False,
-                "change_id": change_id,
-                "message": f"Proposal already registered: {change_id}",
-            }
-
-        # Insert as pending — set both status AND lifecycle_status
-        db.execute(
-            """INSERT INTO evolution_changes
-               (change_id, task_type, suggestion, target_file, change_description, status, lifecycle_status)
-               VALUES (?, ?, ?, ?, ?, 'pending', 'pending')""",
-            (change_id, "external_learning", summary, target_module, change_description),
+        from proposal_lifecycle_manager import create_proposal
+        result = create_proposal(
+            proposal_id=change_id,
+            title=summary[:100],
+            summary=summary,
+            category="external_learning",
+            source_type="external_learning",
+            source_ref=proposal_id,
+            target_module=target_module,
+            change_description=change_description,
+            initial_status="draft",
         )
-        db.commit()
-
-        print(f"[evolution_executor] ✅ Registered external proposal: {change_id}")
-        print(f"  Summary: {summary[:60]}...")
-        print(f"  Target: {target_module or 'TBD'}")
-
+        if result.get("success"):
+            print(f"[evolution_executor] ✅ Registered proposal: {change_id}")
         return {
-            "success": True,
+            "success": result.get("success", False),
             "change_id": change_id,
-            "message": f"Proposal registered. Use apply_improvement() to execute.",
+            "message": result.get("message", ""),
         }
-
+    except ImportError:
+        # Fallback to legacy table if lifecycle manager unavailable
+        _ensure_table()
+        db = get_db()
+        try:
+            db.execute(
+                """INSERT OR IGNORE INTO evolution_changes
+                   (change_id, task_type, suggestion, target_file, change_description, status)
+                   VALUES (?, ?, ?, ?, ?, 'pending')""",
+                (change_id, "external_learning", summary, target_module, change_description),
+            )
+            db.commit()
+            return {"success": True, "change_id": change_id, "message": "Registered (legacy fallback)"}
+        finally:
+            db.close()
     except Exception as e:
-        print(f"[evolution_executor] ❌ Failed to register: {e}")
-        return {
-            "success": False,
-            "change_id": None,
-            "message": str(e),
-        }
-    finally:
-        db.close()
+        return {"success": False, "change_id": None, "message": str(e)}
 
 
 SCHEMA = """
@@ -352,14 +341,35 @@ Please fix the issue and regenerate the patch.
 
         # Final result
         if test_passed and new_content:
-            # Record in database — set lifecycle_status to 'applied'
-            db.execute(
-                """INSERT INTO evolution_changes
-                   (change_id, task_type, suggestion, target_file, change_description, backup_path, status, lifecycle_status)
-                   VALUES (?, ?, ?, ?, ?, ?, 'applied', 'applied')""",
-                (change_id, task_type, suggestion, target_file, change_description, str(backup_path)),
-            )
-            db.commit()
+            # Record in proposals table (primary) via lifecycle manager
+            try:
+                from proposal_lifecycle_manager import create_proposal, transition
+                create_proposal(
+                    proposal_id=change_id,
+                    title=f"Applied: {change_description or suggestion[:60]}",
+                    summary=suggestion,
+                    category=task_type,
+                    source_type="evolution_executor",
+                    target_module=target_file,
+                    change_description=change_description,
+                    initial_status="experimenting",
+                )
+                transition(change_id, "validated", actor="evolution_executor",
+                          reason=f"Applied in {iterations_used} iteration(s)")
+            except Exception:
+                pass
+
+            # Legacy fallback: also write to evolution_changes for backward compat
+            try:
+                db.execute(
+                    """INSERT OR IGNORE INTO evolution_changes
+                       (change_id, task_type, suggestion, target_file, change_description, backup_path, status)
+                       VALUES (?, ?, ?, ?, ?, ?, 'applied')""",
+                    (change_id, task_type, suggestion, target_file, change_description, str(backup_path)),
+                )
+                db.commit()
+            except Exception:
+                pass
 
             print(f"[evolution_executor] ✅ Applied change #{change_id} ({iterations_used} iteration(s))")
             print(f"  File: {target_file}")

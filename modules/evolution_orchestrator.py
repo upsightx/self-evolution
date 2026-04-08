@@ -85,7 +85,7 @@ def ingest_signal(
     Signal types:
       - task_failure: repeated task failures
       - learning_item: from external learning
-      - memory_pattern: from feedback_loop analysis
+      - memory_pattern: from capability_detector analysis
       - capability_gap: from capability_model
       - goal_gap: from goal_tree
 
@@ -312,7 +312,7 @@ def heartbeat() -> dict:
     """Main orchestrator heartbeat. Called periodically.
 
     Steps:
-    1. Collect signals from feedback_loop and capability_model
+    1. Collect signals from capability_detector
     2. Route pending signals to proposals
     3. Advance proposals through lifecycle
     4. Report summary

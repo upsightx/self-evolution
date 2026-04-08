@@ -43,6 +43,7 @@ _TASK_TARGET_MAP = {
     "exploration": "modules/skillify.py",
     "deploy": "modules/evolution_executor.py",
     "external_learning": "modules/learning_conversion.py",
+    "capability_building": "modules/capability_detector.py",
 }
 
 
@@ -61,9 +62,13 @@ def _resolve_target_file(task_type: str, pattern: str) -> str:
     if any(kw in pattern_lower for kw in ["template", "prompt", "instruction"]):
         return "modules/critic_engine.py"
     if any(kw in pattern_lower for kw in ["memory", "recall", "search"]):
-        return "modules/feedback_loop.py"
-    if any(kw in pattern_lower for kw in ["goal", "capability", "skill"]):
-        return "modules/capability_model.py"
+        return "modules/memory_governor.py"
+    if any(kw in pattern_lower for kw in ["goal", "capability", "skill", "detect"]):
+        return "modules/capability_detector.py"
+    if any(kw in pattern_lower for kw in ["signal", "route", "orchestrat"]):
+        return "modules/evolution_orchestrator.py"
+    if any(kw in pattern_lower for kw in ["proposal", "lifecycle", "approve"]):
+        return "modules/proposal_lifecycle_manager.py"
 
     return ""
 
