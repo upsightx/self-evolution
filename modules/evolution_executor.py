@@ -361,6 +361,17 @@ Please fix the issue and regenerate the patch.
             print(f"  File: {target_file}")
             print(f"  Backup: {backup_path}")
 
+            # Log event
+            try:
+                from evolution_runtime import log_event
+                log_event("change_applied", change_id, {
+                    "target_file": target_file,
+                    "task_type": task_type,
+                    "iterations": iterations_used,
+                })
+            except Exception:
+                pass
+
             return {
                 "success": True,
                 "change_id": change_id,
@@ -607,6 +618,14 @@ def rollback(change_id: str) -> dict:
         db.commit()
 
         print(f"[evolution_executor] ✅ Rolled back change #{change_id}")
+
+        # Log event
+        try:
+            from evolution_runtime import log_event
+            log_event("change_rolled_back", change_id, {"backup_path": str(backup_path)})
+        except Exception:
+            pass
+
         return {"success": True, "message": f"Rolled back to {backup_path}"}
 
     except Exception as e:

@@ -21,11 +21,23 @@ from causal_validator import get_verification_report
 
 
 def get_event_stats() -> dict:
-    """Get event statistics from evolution_changes table.
+    """Get event statistics from evolution_runtime.
     
-    Replaces the removed event_bus dependency.
-    Derives event stats from existing evolution_changes data.
+    Delegates to evolution_runtime for unified event tracking.
+    Falls back to evolution_changes table if runtime unavailable.
     """
+    try:
+        from evolution_runtime import get_event_summary
+        summary = get_event_summary(days=30)
+        return {
+            "total_events": summary["total"],
+            "unprocessed": 0,  # runtime tracks all as processed
+            "by_type": summary["by_type"],
+        }
+    except ImportError:
+        pass
+
+    # Fallback: derive from evolution_changes
     db = get_db()
     try:
         total = db.execute("SELECT COUNT(*) FROM evolution_changes").fetchone()[0]

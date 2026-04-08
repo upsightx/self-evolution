@@ -276,6 +276,20 @@ def validate_change(change_id: str, auto_update_goal: bool = True) -> dict:
             except Exception as e:
                 print(f"[causal_validator] ⚠️ Goal update failed: {e}")
 
+        # Log validation event
+        try:
+            from evolution_runtime import log_event
+            log_event("validation_completed", change_id, {
+                "verdict": verdict,
+                "baseline_rate": round(baseline_rate, 3),
+                "post_rate": round(post_rate, 3),
+                "improvement": round(improvement, 3),
+                "baseline_samples": baseline_samples,
+                "post_samples": post_samples,
+            })
+        except Exception:
+            pass
+
         print(f"[causal_validator] Change #{change_id}: {verdict}")
         print(f"  {message}")
         print(f"  Baseline: {baseline_rate:.0%} (n={baseline_samples})")

@@ -136,6 +136,19 @@ def _register_proposal(item_id: str, summary: str, item: dict) -> dict:
         result["action"] = "registered_proposal"
         result["priority"] = "P0"
         result["id"] = item_id
+
+        # Log event to evolution_runtime
+        if result.get("success"):
+            try:
+                from evolution_runtime import log_event
+                log_event("proposal_created", result.get("change_id"), {
+                    "source": "external_learning",
+                    "priority": "P0",
+                    "summary": summary[:100],
+                })
+            except Exception:
+                pass
+
         return result
 
     except Exception as e:
