@@ -79,9 +79,16 @@ def _ensure_schema():
     cols = {r[1] for r in db.execute("PRAGMA table_info(evolution_changes)").fetchall()}
     if cols:  # table exists
         if "lifecycle_status" not in cols:
-            db.execute("ALTER TABLE evolution_changes ADD COLUMN lifecycle_status TEXT DEFAULT 'applied'")
+            db.execute("ALTER TABLE evolution_changes ADD COLUMN lifecycle_status TEXT DEFAULT NULL")
         if "experiment_id" not in cols:
             db.execute("ALTER TABLE evolution_changes ADD COLUMN experiment_id TEXT DEFAULT NULL")
+
+        # Fix legacy records: sync lifecycle_status from status where NULL
+        db.execute("""
+            UPDATE evolution_changes
+            SET lifecycle_status = status
+            WHERE lifecycle_status IS NULL AND status IS NOT NULL
+        """)
     db.commit()
     db.close()
 
@@ -190,6 +197,17 @@ def transition(change_id: str, new_status: str, detail: str = "") -> dict:
                     "message": f"Change {change_id} not found"}
 
         current = row["lifecycle_status"] or row["status"] or "applied"
+
+        # Normalize: if lifecycle_status is NULL but status is set, use status
+        # This handles legacy records created before lifecycle_status was added
+        if not row["lifecycle_status"] and row["status"]:
+            current = row["status"]
+            # Auto-fix: write the normalized status back
+            db.execute(
+                "UPDATE evolution_changes SET lifecycle_status = ? WHERE change_id = ?",
+                (current, change_id),
+            )
+            db.commit()
 
         # Check valid transition
         valid_next = _TRANSITIONS.get(current, [])

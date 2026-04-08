@@ -103,11 +103,11 @@ def register_external_learning_proposal(
                 "message": f"Proposal already registered: {change_id}",
             }
 
-        # Insert as pending
+        # Insert as pending — set both status AND lifecycle_status
         db.execute(
             """INSERT INTO evolution_changes
-               (change_id, task_type, suggestion, target_file, change_description, status)
-               VALUES (?, ?, ?, ?, ?, 'pending')""",
+               (change_id, task_type, suggestion, target_file, change_description, status, lifecycle_status)
+               VALUES (?, ?, ?, ?, ?, 'pending', 'pending')""",
             (change_id, "external_learning", summary, target_module, change_description),
         )
         db.commit()
@@ -284,6 +284,8 @@ def apply_improvement(
 
         # Interactive loop: generate → test → feedback → refine
         refined_suggestion = suggestion
+        test_passed = False
+        new_content = None
         for iteration in range(1, max_iterations + 1):
             iterations_used = iteration
             print(f"[evolution_executor] Iteration {iteration}/{max_iterations}...")
@@ -339,20 +341,22 @@ Please fix the issue and regenerate the patch.
                     current_content = new_content  # Use last attempt as base for refinement
                     continue
                 else:
+                    test_passed = True
                     print(f"  ✅ Test passed")
                     break  # Success, exit loop
             else:
                 # No test script, assume success
+                test_passed = True
                 print(f"  ✅ Patch generated (no test)")
                 break
 
         # Final result
         if test_passed and new_content:
-            # Record in database
+            # Record in database — set lifecycle_status to 'applied'
             db.execute(
                 """INSERT INTO evolution_changes
-                   (change_id, task_type, suggestion, target_file, change_description, backup_path)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                   (change_id, task_type, suggestion, target_file, change_description, backup_path, status, lifecycle_status)
+                   VALUES (?, ?, ?, ?, ?, ?, 'applied', 'applied')""",
                 (change_id, task_type, suggestion, target_file, change_description, str(backup_path)),
             )
             db.commit()

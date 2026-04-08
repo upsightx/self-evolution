@@ -194,11 +194,23 @@ def _record_candidate(item_id: str, summary: str, item: dict) -> dict:
 
 
 def _trigger_auto_evolve() -> bool:
-    """Trigger auto_evolve for P0 proposals. Returns True if triggered successfully."""
+    """Trigger auto_evolve for P0 proposals. Returns True if triggered successfully.
+    
+    auto_execute is enabled only when an LLM provider is available,
+    ensuring graceful degradation to diagnosis-only mode otherwise.
+    """
     try:
         from auto_evolve import evolve
-        print("[proposal_bridge] ⚡ P0 detected — triggering auto_evolve...")
-        evolve(min_pattern_count=1, auto_execute=False, max_rounds=1)
+        # Check if LLM is available for actual execution
+        try:
+            from llm_provider import is_available
+            can_execute = is_available()
+        except ImportError:
+            can_execute = False
+
+        mode = "execute" if can_execute else "diagnose-only"
+        print(f"[proposal_bridge] ⚡ P0 detected — triggering auto_evolve ({mode})...")
+        evolve(min_pattern_count=1, auto_execute=can_execute, max_rounds=1)
         return True
     except Exception as e:
         print(f"[proposal_bridge] ⚠️ auto_evolve trigger failed: {e}")
@@ -222,13 +234,10 @@ def scan_pending_observations() -> dict:
             SELECT id, title, narrative, tags, created_at
             FROM observations
             WHERE type = 'discovery'
-              AND (source = 'external_learning' OR tags LIKE '%learning%')
-              AND id NOT IN (
-                  SELECT CAST(REPLACE(REPLACE(change_id, 'ext_', ''), 
-                         SUBSTR(change_id, -9), '') AS TEXT)
-                  FROM evolution_changes
-                  WHERE change_id LIKE 'ext_%'
-              )
+              AND source = 'external_learning'
+              AND source != 'proposal_bridge'
+              AND title NOT LIKE '[P1 Candidate]%'
+              AND title NOT LIKE '[P0%'
             ORDER BY created_at DESC
             LIMIT 20
         """).fetchall()
