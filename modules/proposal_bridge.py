@@ -123,32 +123,32 @@ def process_learning_note(note: dict) -> dict:
 
 
 def _register_proposal(item_id: str, summary: str, item: dict) -> dict:
-    """Register a P0 item as an evolution proposal via evolution_executor."""
+    """Register a P0 item as an evolution proposal via proposal_lifecycle_manager."""
     try:
-        from evolution_executor import register_external_learning_proposal
+        from proposal_lifecycle_manager import create_proposal
 
-        result = register_external_learning_proposal(
-            proposal_id=item_id,
+        proposal_id = f"ext_{item_id}_{datetime.now().strftime('%Y%m%d')}"
+        result = create_proposal(
+            proposal_id=proposal_id,
+            title=summary[:100],
             summary=summary,
+            category=item.get("type", "external_learning"),
+            source_type="external_learning",
+            source_ref=item_id,
+            priority=item.get("priority", "P0"),
             target_module=item.get("target_module", ""),
             change_description=item.get("change_description", summary),
+            initial_status="draft",
+            evidence=[{
+                "type": "learning_item",
+                "ref": item_id,
+                "description": summary[:200],
+            }],
         )
         result["action"] = "registered_proposal"
-        result["priority"] = "P0"
+        result["priority"] = item.get("priority", "P0")
         result["id"] = item_id
-
-        # Log event to evolution_runtime
-        if result.get("success"):
-            try:
-                from evolution_runtime import log_event
-                log_event("proposal_created", result.get("change_id"), {
-                    "source": "external_learning",
-                    "priority": "P0",
-                    "summary": summary[:100],
-                })
-            except Exception:
-                pass
-
+        result["proposal_id"] = proposal_id
         return result
 
     except Exception as e:
@@ -162,25 +162,27 @@ def _register_proposal(item_id: str, summary: str, item: dict) -> dict:
 
 
 def _record_candidate(item_id: str, summary: str, item: dict) -> dict:
-    """Record a P1 item as a landing candidate in memory_db."""
+    """Record a P1 item as a landing candidate via memory_governor."""
     try:
-        from memory_db import add_observation
+        from memory_governor import add_observation as gov_add
 
-        obs_id = add_observation(
+        result = gov_add(
             type="discovery",
             title=f"[P1 Candidate] {summary[:80]}",
             narrative=json.dumps(item, ensure_ascii=False, default=str),
-            source="proposal_bridge",
+            source="external_learning",
             tags="learning,P1,candidate",
             task_type="external_learning",
+            origin_module="proposal_bridge",
+            origin_ref=item_id,
         )
         return {
             "id": item_id,
             "action": "recorded_candidate",
             "priority": "P1",
-            "success": True,
-            "observation_id": obs_id,
-            "message": f"Recorded as observation #{obs_id}",
+            "success": result.get("success", False),
+            "observation_id": result.get("observation_id"),
+            "message": result.get("message", ""),
         }
 
     except Exception as e:
@@ -194,14 +196,27 @@ def _record_candidate(item_id: str, summary: str, item: dict) -> dict:
 
 
 def _trigger_auto_evolve() -> bool:
-    """Trigger auto_evolve for P0 proposals. Returns True if triggered successfully.
+    """Trigger evolution via orchestrator for P0 proposals.
     
-    auto_execute is enabled only when an LLM provider is available,
-    ensuring graceful degradation to diagnosis-only mode otherwise.
+    Prefers orchestrator.advance_proposals() for unified flow.
+    Falls back to auto_evolve if orchestrator unavailable.
     """
     try:
+        # Prefer orchestrator (unified entry point)
+        from evolution_orchestrator import advance_proposals
+        print("[proposal_bridge] ⚡ P0 detected — advancing via orchestrator...")
+        result = advance_proposals()
+        if result["advanced"] > 0:
+            print(f"[proposal_bridge] Orchestrator advanced {result['advanced']} proposals")
+        return True
+    except ImportError:
+        pass
+    except Exception as e:
+        print(f"[proposal_bridge] ⚠️ orchestrator failed: {e}, falling back to auto_evolve")
+
+    # Fallback: direct auto_evolve
+    try:
         from auto_evolve import evolve
-        # Check if LLM is available for actual execution
         try:
             from llm_provider import is_available
             can_execute = is_available()
@@ -209,11 +224,11 @@ def _trigger_auto_evolve() -> bool:
             can_execute = False
 
         mode = "execute" if can_execute else "diagnose-only"
-        print(f"[proposal_bridge] ⚡ P0 detected — triggering auto_evolve ({mode})...")
+        print(f"[proposal_bridge] Fallback: auto_evolve ({mode})...")
         evolve(min_pattern_count=1, auto_execute=can_execute, max_rounds=1)
         return True
     except Exception as e:
-        print(f"[proposal_bridge] ⚠️ auto_evolve trigger failed: {e}")
+        print(f"[proposal_bridge] ⚠️ auto_evolve also failed: {e}")
         return False
 
 
