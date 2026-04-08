@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Change Applier — 执行改进建议。
+Change Logger — 记录改进建议的执行意图。
 
 职责：
 - 接收改进建议列表
-- 执行可自动化的改进（如更新配置、创建任务、写入记忆）
+- 记录到 memory_db 作为 observation
 - 返回执行结果
 
-注意：当前为最小实现，只支持记录到 memory_db，不涉及实际系统变更。
-实际的文件修改、配置调整需要人工确认或更复杂的逻辑。
+注意：此模块只负责记录，不执行实际文件变更。
+实际文件变更由 evolution_executor.apply_improvement() 负责。
 """
 from __future__ import annotations
 

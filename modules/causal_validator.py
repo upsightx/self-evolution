@@ -120,25 +120,13 @@ def _get_post_success_rate(task_type: str, after_time: str) -> tuple[float, int]
 def _update_goal_progress_for_task_type(task_type: str, improvement: float) -> bool:
     """Update goal progress for goals related to this task_type.
 
-    Maps task_type to goal metrics and increments current_value proportionally.
+    Uses structured matching: goals declare their linked_task_types or metric keywords.
+    Falls back to keyword matching if no explicit link exists.
 
     Returns:
         True if any goal was updated
     """
-    # Map task types to goal metric patterns
-    goal_metric_map = {
-        "coding": "coding_success_rate",
-        "research": "research_success_rate",
-        "exploration": "exploration",
-        "deploy": "deploy",
-    }
-
-    target_metric = goal_metric_map.get(task_type)
-    if not target_metric:
-        return False
-
     try:
-        # Add modules to path
         import sys
         modules_path = Path(__file__).parent
         if str(modules_path) not in sys.path:
@@ -146,14 +134,36 @@ def _update_goal_progress_for_task_type(task_type: str, improvement: float) -> b
 
         from goal_tree import list_goals, update_goal
 
-        # Find goals with matching metric
         goals = list_goals(status="active")
         updated = False
 
         for goal in goals:
-            metric = goal.get("metric", "")
-            if target_metric.lower() in metric.lower():
-                # Increase current_value by improvement * target_value
+            # Method 1: Explicit linked_task_types field (preferred)
+            linked_types = goal.get("linked_task_types", [])
+            if isinstance(linked_types, str):
+                linked_types = [t.strip() for t in linked_types.split(",") if t.strip()]
+
+            matched = False
+            if linked_types and task_type in linked_types:
+                matched = True
+
+            # Method 2: Keyword matching on metric field (fallback)
+            if not matched:
+                metric = goal.get("metric", "").lower()
+                task_lower = task_type.lower()
+                # Match if task_type appears in metric, or common synonyms
+                synonyms = {
+                    "coding": ["coding", "code", "programming", "dev"],
+                    "research": ["research", "study", "analysis"],
+                    "exploration": ["exploration", "explore", "discover"],
+                    "deploy": ["deploy", "deployment", "release"],
+                    "external_learning": ["learning", "study", "knowledge"],
+                }
+                keywords = synonyms.get(task_lower, [task_lower])
+                if any(kw in metric for kw in keywords):
+                    matched = True
+
+            if matched:
                 target_val = goal.get("target_value", 100)
                 increment = improvement * target_val
                 new_value = min(goal.get("current_value", 0) + increment, target_val)
@@ -228,6 +238,9 @@ def validate_change(change_id: str, auto_update_goal: bool = True) -> dict:
         if post_samples < MIN_SAMPLES:
             verdict = VERDICT_PENDING
             message = f"Waiting for more samples: {post_samples}/{MIN_SAMPLES} (need {MIN_SAMPLES - post_samples} more)"
+        elif baseline_samples < 3:
+            verdict = VERDICT_UNCERTAIN
+            message = f"Insufficient baseline data: only {baseline_samples} pre-change samples"
         elif improvement >= EFFECTIVE_THRESHOLD:
             verdict = VERDICT_EFFECTIVE
             message = f"Success rate improved: {baseline_rate:.0%} → {post_rate:.0%} (+{improvement:.0%})"
@@ -238,13 +251,21 @@ def validate_change(change_id: str, auto_update_goal: bool = True) -> dict:
             verdict = VERDICT_INEFFECTIVE
             message = f"No significant improvement: {baseline_rate:.0%} → {post_rate:.0%} ({improvement:+.0%})"
 
-        # Update database
-        db.execute(
-            """UPDATE evolution_changes
-               SET status = 'verified', verdict = ?, verified_at = ?
-               WHERE change_id = ?""",
-            (verdict, datetime.now().isoformat(), change_id),
-        )
+        # Update database - keep status as applied for pending, verified only for conclusive
+        if verdict == VERDICT_PENDING:
+            db.execute(
+                """UPDATE evolution_changes
+                   SET verdict = ?, verified_at = NULL
+                   WHERE change_id = ?""",
+                (verdict, change_id),
+            )
+        else:
+            db.execute(
+                """UPDATE evolution_changes
+                   SET status = 'verified', verdict = ?, verified_at = ?
+                   WHERE change_id = ?""",
+                (verdict, datetime.now().isoformat(), change_id),
+            )
         db.commit()
 
         # Auto-update goal progress if effective

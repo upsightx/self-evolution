@@ -160,10 +160,7 @@ def _ensure_table():
 def _generate_patch_with_llm(suggestion: str, target_content: str, task_type: str) -> str | None:
     """Use LLM to generate a code patch based on the suggestion.
 
-    Fallback chain:
-    1. SILICONFLOW_API_KEY → Qwen/Qwen2.5-7B-Instruct
-    2. OPENROUTER_API_KEY → openrouter/qwen/qwen3.6-plus:free
-    3. Return None if no API key available
+    Delegates to llm_provider for unified provider management and fallback.
 
     Args:
         suggestion: Improvement suggestion from feedback_loop
@@ -173,74 +170,16 @@ def _generate_patch_with_llm(suggestion: str, target_content: str, task_type: st
     Returns:
         Modified content, or None if generation failed
     """
-    prompt = f"""You are an AI Agent framework engineer. Improve the following template/code based on the suggestion.
-
-Task Type: {task_type}
-Improvement Suggestion: {suggestion}
-
-Current Code:
-```
-{target_content[:3000]}
-```
-
-Instructions:
-1. Apply the suggestion to improve the code.
-2. Return ONLY the complete modified code.
-3. Do not include explanations, just the code.
-4. Keep the same structure and style.
-5. If the suggestion is about prompts/templates, modify the relevant strings.
-
-Return the full modified code below:
-"""
-
-    # Try SiliconFlow first
-    api_key = os.environ.get("SILICONFLOW_API_KEY")
-    if api_key:
-        try:
-            data = json.dumps({
-                "model": "Qwen/Qwen2.5-7B-Instruct",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.3
-            }).encode()
-            req = urllib.request.Request("https://api.siliconflow.cn/v1/chat/completions", data=data, headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}"
-            })
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                result = json.loads(resp.read().decode())
-                content = result["choices"][0]["message"]["content"].strip()
-                content = content.replace("```python", "").replace("```", "").strip()
-                return content
-        except Exception as e:
-            print(f"[evolution_executor] SiliconFlow failed: {e}, trying OpenRouter...")
-
-    # Fallback to OpenRouter
-    api_key = os.environ.get("OPENROUTER_API_KEY")
-    if api_key:
-        try:
-            data = json.dumps({
-                "model": "openrouter/qwen/qwen3.6-plus:free",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.3
-            }).encode()
-            req = urllib.request.Request("https://openrouter.ai/api/v1/chat/completions", data=data, headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-                "HTTP-Referer": "https://openclaw.ai",
-                "X-Title": "OpenClaw Self-Evolution",
-            })
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                result = json.loads(resp.read().decode())
-                content = result["choices"][0]["message"]["content"].strip()
-                content = content.replace("```python", "").replace("```", "").strip()
-                return content
-        except Exception as e:
-            print(f"[evolution_executor] OpenRouter failed: {e}")
-
-    print("[evolution_executor] No LLM API available, skipping patch generation")
-    return None
-
-
+    try:
+        from llm_provider import generate_code_patch
+        return generate_code_patch(
+            suggestion=suggestion,
+            current_code=target_content,
+            task_type=task_type,
+        )
+    except ImportError:
+        print("[evolution_executor] llm_provider not available, skipping patch generation")
+        return None
 def _check_safety(target_file: str, new_content: str) -> dict:
     """Check if the change is safe to apply.
 
