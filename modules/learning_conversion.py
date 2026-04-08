@@ -17,10 +17,20 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 _modules_path = Path(__file__).parent
-_xmemory_path = _modules_path.parent / "X记忆"
-for p in [_modules_path, _xmemory_path]:
+_workspace_path = _modules_path.parent
+for p in [_modules_path]:
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
+try:
+    if str(_workspace_path) not in sys.path:
+        sys.path.insert(0, str(_workspace_path))
+    from runtime_config import XMEMORY_PATH
+    if str(XMEMORY_PATH) not in sys.path:
+        sys.path.insert(0, str(XMEMORY_PATH))
+except ImportError:
+    _xmemory_path = _workspace_path / "X记忆"
+    if _xmemory_path.exists() and str(_xmemory_path) not in sys.path:
+        sys.path.insert(0, str(_xmemory_path))
 
 from db_common import get_db
 

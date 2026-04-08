@@ -1,14 +1,28 @@
-"""公共数据库连接模块
+"""公共数据库连接模块 — self-evolution/modules
 
-所有模块统一通过此模块获取 DB 连接，避免重复定义 DB_PATH 和连接逻辑。
+统一通过 runtime_config 获取 DB 路径，禁止本地硬编码。
+与 X记忆/db_common.py 指向同一个 memory.db。
 """
 
 import os
 import re
+import sys
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(os.environ.get("SELF_EVOLUTION_DB", Path(__file__).parent / "memory.db"))
+# 优先从 runtime_config 获取统一路径
+try:
+    _workspace = Path(__file__).resolve().parent.parent
+    if str(_workspace) not in sys.path:
+        sys.path.insert(0, str(_workspace))
+    from runtime_config import MEMORY_DB_PATH
+    DB_PATH = MEMORY_DB_PATH
+except ImportError:
+    # Fallback: 环境变量 > 本地（指向 X记忆 主库）
+    _fallback = Path(__file__).resolve().parent.parent / "X记忆" / "memory.db"
+    DB_PATH = Path(os.environ.get("OPENCLAW_MEMORY_DB",
+                                   os.environ.get("SELF_EVOLUTION_DB",
+                                                   str(_fallback))))
 
 
 def get_db(db_path=None):
@@ -37,11 +51,7 @@ _TIME_PATTERNS = {
 
 
 def parse_time_hint(query: str) -> dict | None:
-    """从查询中提取时间暗示。
-
-    Returns:
-        {"days_ago": int, "matched": str} or None
-    """
+    """从查询中提取时间暗示。"""
     if not query:
         return None
     for pattern, days in _TIME_PATTERNS.items():

@@ -21,6 +21,53 @@ if str(_modules_path) not in sys.path:
 WORKSPACE = Path(__file__).parent.parent
 
 
+def _ensure_xmemory_path():
+    """Ensure X-Memory modules are importable via runtime_config."""
+    try:
+        if str(WORKSPACE) not in sys.path:
+            sys.path.insert(0, str(WORKSPACE))
+        from runtime_config import XMEMORY_PATH
+        if str(XMEMORY_PATH) not in sys.path:
+            sys.path.insert(0, str(XMEMORY_PATH))
+    except ImportError:
+        # Fallback
+        xm = WORKSPACE / "X\u8bb0\u5fc6"
+        if xm.exists() and str(xm) not in sys.path:
+            sys.path.insert(0, str(xm))
+
+
+# Task type → likely target file mapping
+_TASK_TARGET_MAP = {
+    "coding": "modules/critic_engine.py",
+    "research": "modules/learning_conversion.py",
+    "exploration": "modules/skillify.py",
+    "deploy": "modules/evolution_executor.py",
+    "external_learning": "modules/learning_conversion.py",
+}
+
+
+def _resolve_target_file(task_type: str, pattern: str) -> str:
+    """Map task_type + failure pattern to a likely target file.
+
+    Returns empty string if no mapping found (caller should skip execution).
+    """
+    # Direct mapping
+    target = _TASK_TARGET_MAP.get(task_type, "")
+    if target:
+        return target
+
+    # Pattern-based heuristics
+    pattern_lower = pattern.lower() if pattern else ""
+    if any(kw in pattern_lower for kw in ["template", "prompt", "instruction"]):
+        return "modules/critic_engine.py"
+    if any(kw in pattern_lower for kw in ["memory", "recall", "search"]):
+        return "modules/feedback_loop.py"
+    if any(kw in pattern_lower for kw in ["goal", "capability", "skill"]):
+        return "modules/capability_model.py"
+
+    return ""
+
+
 def evolve(
     min_pattern_count: int = 3,
     auto_execute: bool = False,
@@ -92,7 +139,7 @@ def _run_single_round(min_pattern_count: int, auto_execute: bool, max_changes: i
     """Run a single evolution round."""
     # Ensure DB tables exist
     try:
-        sys.path.insert(0, str(WORKSPACE / "X记忆"))
+        _ensure_xmemory_path()
         from memory_db import init_db
         init_db()
     except Exception:
@@ -173,11 +220,13 @@ def _run_single_round(min_pattern_count: int, auto_execute: bool, max_changes: i
         if patterns:
             suggestions = []
             for p in patterns[:max_changes]:
+                # Map task_type to likely target files
+                target = _resolve_target_file(p.get("task_type", "general"), p.get("pattern", ""))
                 suggestions.append({
                     "task_type": p.get("task_type", "general"),
                     "title": f"Fix {p.get('pattern', 'unknown')}",
-                    "description": p.get("suggestion", ""),
-                    "target_file": "",  # Would need LLM to determine
+                    "description": p.get("suggestion", "") or f"Address failure pattern: {p.get('pattern', '')}",
+                    "target_file": target,
                 })
             result["improvement_suggestions"] = suggestions
             print(f"  Generated {len(suggestions)} suggestions")
@@ -191,10 +240,19 @@ def _run_single_round(min_pattern_count: int, auto_execute: bool, max_changes: i
         try:
             from evolution_executor import apply_improvement
             for sug in result["improvement_suggestions"][:max_changes]:
+                target = sug.get("target_file", "")
+                if not target or not target.strip():
+                    print(f"    ⏭️ Skipped (no target_file): {sug.get('title', '?')}")
+                    result["applied_changes"].append({
+                        "success": False,
+                        "change_id": None,
+                        "message": "Skipped: no target_file resolved",
+                    })
+                    continue
                 change_result = apply_improvement(
                     task_type=sug.get("task_type", "general"),
                     suggestion=sug.get("description", ""),
-                    target_file=sug.get("target_file", ""),
+                    target_file=target,
                     change_description=sug.get("title", ""),
                 )
                 result["applied_changes"].append(change_result)

@@ -39,11 +39,12 @@ PROTECTED_FILES = {
     "X记忆/memory_store.py",
     "X记忆/memory_retrieval.py",
     "X记忆/memory_service.py",
-    "self-evolution/modules/goal_tree.py",
-    "self-evolution/modules/capability_model.py",
-    "self-evolution/modules/feedback_loop.py",
-    "self-evolution/modules/causal_validator.py",
-    "self-evolution/modules/auto_evolve.py",
+    "modules/goal_tree.py",
+    "modules/capability_model.py",
+    "modules/feedback_loop.py",
+    "modules/causal_validator.py",
+    "modules/auto_evolve.py",
+    "runtime_config.py",
     ".gitignore",
     "openclaw.json",
 }
@@ -311,6 +312,16 @@ def apply_improvement(
     test_results = []
 
     try:
+        if not target_file or not target_file.strip():
+            return {
+                "success": False,
+                "change_id": change_id,
+                "backup_path": None,
+                "message": "target_file is empty — cannot apply improvement without a specific file target",
+                "iterations": 0,
+                "test_results": [],
+            }
+
         if not target_path.exists():
             return {
                 "success": False,
@@ -347,16 +358,11 @@ def apply_improvement(
                 print(f"  ⚠️ LLM generation failed")
                 break
 
-            # Apply change temporarily
-            target_path.write_text(new_content, encoding="utf-8")
-
-            # Safety check
+            # Safety check BEFORE writing to disk
             safety = _check_safety(target_file, new_content)
             if not safety["safe"]:
                 test_results.append({"iteration": iteration, "status": "blocked", "reason": safety["reason"]})
                 print(f"  🛑 Safety check failed: {safety['reason']}")
-                # Rollback
-                target_path.write_text(original_content, encoding="utf-8")
                 return {
                     "success": False,
                     "change_id": change_id,
@@ -365,6 +371,9 @@ def apply_improvement(
                     "iterations": iteration,
                     "test_results": test_results,
                 }
+
+            # Apply change (safe content only)
+            target_path.write_text(new_content, encoding="utf-8")
 
             # Test in sandbox if test_script provided
             test_passed = True

@@ -217,11 +217,18 @@ def _write_failure_to_memory(task_type: str, model: str, failure_mode: dict, db_
     Silently ignores failures (never blocks analysis).
     """
     try:
-        # Add X记忆 to Python path
+        # Import X-Memory via runtime_config
         workspace = Path(__file__).resolve().parent.parent
-        xmemory_path = workspace / "X记忆"
-        if str(xmemory_path) not in sys.path:
-            sys.path.insert(0, str(xmemory_path))
+        if str(workspace) not in sys.path:
+            sys.path.insert(0, str(workspace))
+        try:
+            from runtime_config import XMEMORY_PATH
+            if str(XMEMORY_PATH) not in sys.path:
+                sys.path.insert(0, str(XMEMORY_PATH))
+        except ImportError:
+            xmemory_path = workspace / "X记忆"
+            if str(xmemory_path) not in sys.path:
+                sys.path.insert(0, str(xmemory_path))
 
         # Import memory_store functions
         from memory_store import add_observation
