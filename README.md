@@ -46,6 +46,11 @@ agenda_planner(下一步做什么)
 | `evolution_history.py` | 历史追踪 | 变更记录时间线、按条件查询、支持回滚 |
 | `agenda_planner.py` | 动态议程 | 混合目标更新+例行检查、优先级排序、静默时段过滤 |
 | `auto_evolve.py` | 一键自动进化 | 闭环流程：缺口→失败分析→改进→验证→更新进度 |
+| `change_applier.py` | 改进执行器 | 接收改进建议、执行可自动化变更、记录到 memory_db |
+| `improvement_suggestions.py` | 建议生成器 | 基于目标缺口和能力短板生成可执行改进建议 |
+| `learning_conversion.py` | 学习转化追踪 | 追踪外部学习内容是否转化为实际进化变更、计算转化率 |
+| `skillify.py` | 自动技能化 | 检测重复任务模式、自动生成 Skill 草稿 |
+| `validation.py` | 效果验证 | 验证改进变更是否生效、前后能力对比 |
 
 ## 快速开始
 
@@ -129,6 +134,14 @@ causal_validator 验证效果
 - 两者通过 `memory/learning/` 目录和 SQLite 数据库连接
 
 ## 更新日志
+
+### 2026-04-08 — 外部学习打通 + 模块补全
+- 新增 6 个模块：`change_applier`、`improvement_suggestions`、`learning_conversion`、`skillify`、`validation`、`usage_stats`
+- `learning_conversion`：追踪外部学习内容转化为进化变更的比率
+- `skillify`：自动检测重复任务模式，生成 Skill 草稿
+- 外部学习模块（External Learning）现在直接写入 `memory_db` observations 表，P0 提案自动触发 `auto_evolve`
+- 修复 `auto_evolve` 启动时 `task_outcomes` 表不存在的问题（加入 `init_db()` 保障）
+- 完整闭环：External Learning → memory_db → Self-Evolution → causal_validator
 
 ### 2026-04-04 — 目标驱动架构重写
 - 从"软件工程流水线"重构为"目标驱动的自主进化"
