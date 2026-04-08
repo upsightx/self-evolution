@@ -355,6 +355,22 @@ def heartbeat() -> dict:
     except Exception as e:
         actions.append(f"Capability scan error: {e}")
 
+    # 2b. Collect success patterns (what's working well)
+    try:
+        from feedback_loop import analyze_success_patterns
+        successes = analyze_success_patterns(min_samples=3)
+        if successes:
+            for s in successes[:3]:
+                ingest_signal(
+                    signal_type="success_pattern",
+                    source_id=f"{s.get('task_type', '')}_{s.get('model', '')}",
+                    task_type=s.get("task_type", ""),
+                    severity=0.1,  # low severity = good thing, just record it
+                )
+            actions.append(f"Recorded {len(successes)} success patterns")
+    except Exception as e:
+        pass  # success patterns are nice-to-have, don't report errors
+
     # 3. Route signals to proposals
     try:
         route_result = route_pending_signals()
@@ -382,6 +398,14 @@ def heartbeat() -> dict:
     except Exception as e:
         actions.append(f"External learning scan error: {e}")
 
+    # 6. Proactive capability building
+    try:
+        experiments = scan_capability_gaps()
+        if experiments:
+            actions.append(f"Created {len(experiments)} capability experiments")
+    except Exception as e:
+        actions.append(f"Capability experiment error: {e}")
+
     summary = {
         "timestamp": timestamp,
         "actions": actions,
@@ -396,6 +420,129 @@ def heartbeat() -> dict:
         print("[orchestrator] Heartbeat: all clear")
 
     return summary
+
+
+# ============ Proactive Capability Building ============
+
+def create_capability_experiment(
+    capability_name: str,
+    description: str,
+    approach: str = "",
+    priority: str = "P1",
+) -> dict:
+    """Proactively create an experiment to build a missing capability.
+
+    Unlike reactive proposals (from failure patterns), this is triggered when
+    the system detects it LACKS a capability entirely — not that it's failing,
+    but that it can't even attempt certain tasks.
+
+    Args:
+        capability_name: What capability to build (e.g., "pdf_processing", "image_analysis")
+        description: What the capability should do
+        approach: How to build it (e.g., "install tool X", "create skill Y")
+        priority: P0/P1/P2
+
+    Returns:
+        {"success": bool, "proposal_id": str, "message": str}
+    """
+    try:
+        from proposal_lifecycle_manager import create_proposal
+
+        proposal_id = f"cap_{capability_name}_{datetime.now().strftime('%m%d%H%M')}"
+        result = create_proposal(
+            proposal_id=proposal_id,
+            title=f"Build capability: {capability_name}",
+            summary=description,
+            category="capability_building",
+            source_type="proactive",
+            priority=priority,
+            target_scope=capability_name,
+            change_description=approach or f"Research and implement {capability_name}",
+            initial_status="draft",
+            evidence=[{
+                "type": "capability_gap",
+                "ref": capability_name,
+                "description": f"System lacks {capability_name} capability",
+            }],
+        )
+
+        if result.get("success"):
+            _log_event("capability_experiment_created", proposal_id, {
+                "capability": capability_name,
+                "priority": priority,
+                "approach": approach[:100],
+            })
+            print(f"[orchestrator] 🧪 Created capability experiment: {capability_name} ({priority})")
+
+        return result
+
+    except Exception as e:
+        return {"success": False, "proposal_id": "", "message": str(e)}
+
+
+def scan_capability_gaps() -> list[dict]:
+    """Scan for capability gaps and proactively create experiments.
+
+    Checks:
+    1. Task types with 0% success rate (complete inability)
+    2. Task types attempted but never succeeded
+    3. Known capability dimensions scoring 0
+
+    Returns:
+        List of created experiment proposals
+    """
+    created = []
+    db = get_db()
+
+    try:
+        # Find task types with 0% success (attempted but always fail)
+        zero_success = db.execute(
+            """SELECT task_type, COUNT(*) as attempts, model
+               FROM task_outcomes
+               WHERE success = 0
+               GROUP BY task_type
+               HAVING attempts >= 2
+                 AND task_type NOT IN (
+                     SELECT task_type FROM task_outcomes WHERE success = 1
+                 )"""
+        ).fetchall()
+
+        for row in zero_success:
+            result = create_capability_experiment(
+                capability_name=row["task_type"],
+                description=f"Task type '{row['task_type']}' has {row['attempts']} attempts, 0 successes",
+                approach=f"Investigate why {row['task_type']} always fails, find tools or methods to fix",
+                priority="P0" if row["attempts"] >= 5 else "P1",
+            )
+            if result.get("success"):
+                created.append(result)
+
+    except Exception as e:
+        print(f"[orchestrator] Capability gap scan error: {e}")
+    finally:
+        db.close()
+
+    # Also check capability_model for zero-score dimensions
+    try:
+        from capability_model import get_weaknesses
+        weaknesses = get_weaknesses(threshold=10.0)  # Very low threshold = near-zero capability
+        for w in weaknesses[:3]:
+            if w.get("score", 0) < 10 and w.get("sample_count", 0) >= 3:
+                result = create_capability_experiment(
+                    capability_name=w["name"],
+                    description=f"Capability '{w['name']}' scores {w['score']:.0f}/100 — near zero",
+                    approach=f"Build or acquire {w['name']} capability",
+                    priority="P1",
+                )
+                if result.get("success"):
+                    created.append(result)
+    except Exception:
+        pass
+
+    if created:
+        print(f"[orchestrator] Created {len(created)} capability experiments")
+
+    return created
 
 
 # ============ Stats ============

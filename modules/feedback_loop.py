@@ -331,6 +331,131 @@ def analyze_patterns(min_samples: int = 5, db_path: str | None = None,
     return results
 
 
+def analyze_success_patterns(min_samples: int = 3, db_path: str | None = None) -> list[dict]:
+    """Analyze success patterns. Returns groups with success rate >= 80%.
+
+    Identifies what works well — which task_type + model combos are reliable,
+    what strategies succeed consistently. This is equally important as failure
+    analysis for evolution: success patterns should be replicated and protected.
+
+    Args:
+        min_samples: minimum samples per group
+        db_path: path to task_outcomes DB
+
+    Returns:
+        list of pattern dicts with success info
+    """
+    conn = _get_conn(db_path)
+    if conn is None:
+        return []
+
+    try:
+        rows = conn.execute(
+            "SELECT task_type, model, "
+            "COUNT(*) as total, SUM(success) as wins, "
+            "GROUP_CONCAT(CASE WHEN success = 1 THEN description ELSE NULL END, '|||') as success_descs "
+            "FROM task_outcomes "
+            "GROUP BY task_type, model "
+            "HAVING total >= ?",
+            (min_samples,),
+        ).fetchall()
+    except sqlite3.Error as e:
+        print(f"[ERROR] Failed to analyze success patterns: {e}", file=sys.stderr)
+        return []
+    finally:
+        conn.close()
+
+    results = []
+    for r in rows:
+        total = r["total"]
+        wins = r["wins"] or 0
+        success_rate = wins / total
+        if success_rate < 0.8:
+            continue
+
+        # Extract common themes from successful tasks
+        descs_raw = r["success_descs"] or ""
+        desc_list = [d.strip() for d in descs_raw.split("|||") if d.strip()]
+
+        # Find recurring keywords in successful descriptions
+        word_counter: Counter = Counter()
+        stopwords = {"the", "a", "an", "is", "was", "to", "of", "in", "for", "and", "or", "no", "not",
+                     "成功", "完成", "已", "了", "的", "和", "在"}
+        for desc in desc_list:
+            tokens = re.findall(r"[a-z_一-鿿]{2,}", desc.lower())
+            for t in tokens:
+                if t not in stopwords:
+                    word_counter[t] += 1
+
+        themes = [w for w, c in word_counter.most_common(5) if c >= 2]
+        theme_str = ", ".join(themes) if themes else "general_success"
+
+        results.append({
+            "pattern": theme_str,
+            "task_type": r["task_type"],
+            "model": r["model"],
+            "success_rate": round(success_rate, 3),
+            "sample_count": total,
+            "recent_successes": desc_list[-5:] if desc_list else [],
+            "recommendation": f"Reliable combo: {r['task_type']}/{r['model']} ({success_rate:.0%} success over {total} tasks)",
+        })
+
+    results.sort(key=lambda x: x["success_rate"], reverse=True)
+    return results
+
+
+def analyze_all_patterns(min_samples: int = 3, db_path: str | None = None) -> dict:
+    """Analyze both failure AND success patterns.
+
+    Returns a complete picture: what's broken, what's working, and what to do about it.
+
+    Returns:
+        {
+            "failures": list[dict],  # from analyze_patterns
+            "successes": list[dict],  # from analyze_success_patterns
+            "recommendations": list[str],  # actionable insights
+        }
+    """
+    failures = analyze_patterns(min_samples=min_samples, db_path=db_path, auto_write_memory=False)
+    successes = analyze_success_patterns(min_samples=min_samples, db_path=db_path)
+
+    recommendations = []
+
+    # Cross-reference: if task_type fails with model A but succeeds with model B
+    fail_combos = {(f["task_type"], f["model"]) for f in failures}
+    success_combos = {(s["task_type"], s["model"]): s for s in successes}
+
+    for task_type, fail_model in fail_combos:
+        for (s_task, s_model), s_info in success_combos.items():
+            if s_task == task_type and s_model != fail_model:
+                recommendations.append(
+                    f"Switch {task_type} from {fail_model} to {s_model} "
+                    f"(current: failing, {s_model}: {s_info['success_rate']:.0%} success)"
+                )
+
+    # Identify task types with no successful model
+    fail_types = {f["task_type"] for f in failures}
+    success_types = {s["task_type"] for s in successes}
+    gap_types = fail_types - success_types
+    for gap in gap_types:
+        recommendations.append(
+            f"No reliable model for '{gap}' — consider capability building or external tool"
+        )
+
+    # Identify strengths to protect
+    for s in successes:
+        if s["success_rate"] >= 0.95 and s["sample_count"] >= 5:
+            recommendations.append(
+                f"Protect: {s['task_type']}/{s['model']} is highly reliable ({s['success_rate']:.0%}), avoid unnecessary changes"
+            )
+
+    return {
+        "failures": failures,
+        "successes": successes,
+        "recommendations": recommendations,
+    }
+
+
 def generate_template_improvements(task_type: str, db_path: str | None = None) -> list[str]:
     """Generate improvement suggestions based on historical failures for a task type."""
     conn = _get_conn(db_path)
