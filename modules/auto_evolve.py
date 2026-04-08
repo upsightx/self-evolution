@@ -90,6 +90,13 @@ def evolve(
 
 def _run_single_round(min_pattern_count: int, auto_execute: bool, max_changes: int) -> dict:
     """Run a single evolution round."""
+    # Ensure DB tables exist
+    try:
+        sys.path.insert(0, str(WORKSPACE / "X记忆"))
+        from memory_db import init_db
+        init_db()
+    except Exception:
+        pass
     result = {
         "round_start": datetime.now().isoformat(),
         "goal_gaps": [],
