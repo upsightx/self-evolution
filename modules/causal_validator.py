@@ -142,14 +142,17 @@ def _get_proposals_pending_validation() -> list[dict]:
 def _update_proposal_verdict(proposal_id: str, verdict: str, evidence: dict) -> bool:
     """Write verdict back to proposals via lifecycle manager."""
     try:
-        from proposal_lifecycle_manager import transition, add_evidence
-        add_evidence(proposal_id, "causal_validation", json.dumps(evidence, default=str))
+        from proposal_lifecycle_manager import transition, attach_evidence
+        attach_evidence(proposal_id, "causal_validation",
+                       json.dumps(evidence, default=str),
+                       description=f"verdict={verdict}")
         if verdict == VERDICT_EFFECTIVE:
             transition(proposal_id, "validated", actor="causal_validator",
                       reason=f"Effective: +{evidence.get('improvement', 0):.0%}")
             return True
         elif verdict == VERDICT_INEFFECTIVE:
-            transition(proposal_id, "rejected", actor="causal_validator",
+            # State machine allows experimenting → failed (not rejected)
+            transition(proposal_id, "failed", actor="causal_validator",
                       reason=f"Ineffective: {evidence.get('improvement', 0):+.0%}")
             return True
         # pending/uncertain: stay in experimenting

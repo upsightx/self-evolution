@@ -342,8 +342,10 @@ Please fix the issue and regenerate the patch.
         # Final result
         if test_passed and new_content:
             # Record in proposals table (primary) via lifecycle manager
+            # NOTE: Stay in 'experimenting' — do NOT advance to 'validated'.
+            # Validation requires post-deployment sample collection by causal_validator.
             try:
-                from proposal_lifecycle_manager import create_proposal, transition
+                from proposal_lifecycle_manager import create_proposal
                 create_proposal(
                     proposal_id=change_id,
                     title=f"Applied: {change_description or suggestion[:60]}",
@@ -354,22 +356,11 @@ Please fix the issue and regenerate the patch.
                     change_description=change_description,
                     initial_status="experimenting",
                 )
-                transition(change_id, "validated", actor="evolution_executor",
-                          reason=f"Applied in {iterations_used} iteration(s)")
             except Exception:
                 pass
 
-            # Legacy fallback: also write to evolution_changes for backward compat
-            try:
-                db.execute(
-                    """INSERT OR IGNORE INTO evolution_changes
-                       (change_id, task_type, suggestion, target_file, change_description, backup_path, status)
-                       VALUES (?, ?, ?, ?, ?, ?, 'applied')""",
-                    (change_id, task_type, suggestion, target_file, change_description, str(backup_path)),
-                )
-                db.commit()
-            except Exception:
-                pass
+            # NOTE: legacy evolution_changes write removed (2026-04-09).
+            # proposals table via proposal_lifecycle_manager is the sole status source.
 
             print(f"[evolution_executor] ✅ Applied change #{change_id} ({iterations_used} iteration(s))")
             print(f"  File: {target_file}")

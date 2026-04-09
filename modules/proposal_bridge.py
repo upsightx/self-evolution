@@ -198,37 +198,18 @@ def _record_candidate(item_id: str, summary: str, item: dict) -> dict:
 def _trigger_auto_evolve() -> bool:
     """Trigger evolution via orchestrator for P0 proposals.
     
-    Prefers orchestrator.advance_proposals() for unified flow.
-    Falls back to auto_evolve if orchestrator unavailable.
+    Uses orchestrator.advance_proposals() as the sole entry point.
+    No fallback to legacy auto_evolve.
     """
     try:
-        # Prefer orchestrator (unified entry point)
         from evolution_orchestrator import advance_proposals
         print("[proposal_bridge] ⚡ P0 detected — advancing via orchestrator...")
         result = advance_proposals()
         if result["advanced"] > 0:
             print(f"[proposal_bridge] Orchestrator advanced {result['advanced']} proposals")
         return True
-    except ImportError:
-        pass
     except Exception as e:
-        print(f"[proposal_bridge] ⚠️ orchestrator failed: {e}, falling back to auto_evolve")
-
-    # Fallback: direct auto_evolve
-    try:
-        from auto_evolve import evolve
-        try:
-            from llm_provider import is_available
-            can_execute = is_available()
-        except ImportError:
-            can_execute = False
-
-        mode = "execute" if can_execute else "diagnose-only"
-        print(f"[proposal_bridge] Fallback: auto_evolve ({mode})...")
-        evolve(min_pattern_count=1, auto_execute=can_execute, max_rounds=1)
-        return True
-    except Exception as e:
-        print(f"[proposal_bridge] ⚠️ auto_evolve also failed: {e}")
+        print(f"[proposal_bridge] ⚠️ orchestrator failed: {e}")
         return False
 
 

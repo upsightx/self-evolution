@@ -303,7 +303,97 @@ def advance_proposals() -> dict:
                 advanced += 1
                 details.append(f"{p['proposal_id']}: pending_review → approved (P0 auto)")
 
+    # 3. approved → experimenting (dispatch to executor)
+    approved = list_proposals(status="approved")
+    for p in approved:
+        executed = _dispatch_experiment(p)
+        if executed:
+            advanced += 1
+            details.append(f"{p['proposal_id']}: approved → experimenting (dispatched)")
+
+    # 4. experimenting → validated/failed (run causal validation)
+    experimenting = list_proposals(status="experimenting")
+    for p in experimenting:
+        validated = _run_validation(p)
+        if validated:
+            advanced += 1
+            details.append(f"{p['proposal_id']}: experimenting → {validated}")
+
+    # 5. validated → released (auto-release)
+    validated_list = list_proposals(status="validated")
+    for p in validated_list:
+        r = transition(p["proposal_id"], "released", actor="orchestrator",
+                      reason="Validated, auto-releasing")
+        if r["success"]:
+            advanced += 1
+            details.append(f"{p['proposal_id']}: validated → released")
+
     return {"advanced": advanced, "details": details}
+
+
+def _dispatch_experiment(proposal: dict) -> bool:
+    """Dispatch an approved proposal to evolution_executor.
+
+    Transitions proposal to 'experimenting' first, then runs executor.
+    If executor fails, the proposal stays in 'experimenting' for retry.
+
+    Returns:
+        True if successfully dispatched (regardless of executor outcome).
+    """
+    from proposal_lifecycle_manager import transition
+
+    pid = proposal["proposal_id"]
+
+    # Transition to experimenting
+    r = transition(pid, "experimenting", actor="orchestrator",
+                  reason="Dispatching to executor")
+    if not r["success"]:
+        print(f"[orchestrator] Cannot dispatch {pid}: {r['message']}")
+        return False
+
+    # Attempt execution (best-effort; failure leaves proposal in experimenting)
+    try:
+        from evolution_executor import apply_improvement
+        target = proposal.get("target_module", "")
+        if not target:
+            print(f"[orchestrator] {pid}: no target_module, skipping execution")
+            return True  # Still counts as dispatched; needs manual target
+
+        result = apply_improvement(
+            task_type=proposal.get("category", ""),
+            suggestion=proposal.get("change_description") or proposal.get("summary", ""),
+            target_file=target,
+            change_description=proposal.get("title", ""),
+        )
+        if result["success"]:
+            print(f"[orchestrator] ✅ {pid}: executor applied successfully")
+        else:
+            print(f"[orchestrator] ⚠️ {pid}: executor failed: {result['message']}")
+    except Exception as e:
+        print(f"[orchestrator] ⚠️ {pid}: executor error: {e}")
+
+    return True
+
+
+def _run_validation(proposal: dict) -> str | None:
+    """Run causal validation on an experimenting proposal.
+
+    Returns:
+        New status string ('validated'/'failed') if transition happened, None otherwise.
+    """
+    try:
+        from causal_validator import validate_proposal
+        result = validate_proposal(proposal["proposal_id"])
+        verdict = result.get("verdict", "")
+        # validator handles transition internally via _update_proposal_verdict
+        if verdict in ("effective", "ineffective"):
+            # Map verdict to resulting status
+            return "validated" if verdict == "effective" else "failed"
+        # pending/uncertain: not enough samples yet, stay in experimenting
+        return None
+    except Exception as e:
+        print(f"[orchestrator] Validation error for {proposal['proposal_id']}: {e}")
+        return None
 
 
 # ============ Heartbeat ============
