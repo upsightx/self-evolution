@@ -14,9 +14,19 @@ import os
 from pathlib import Path
 
 # Workspace root: 所有模块的公共根目录
+# self-evolution/ 是 workspace 的子目录，需要往上跳一级
+_SELF_DIR = Path(__file__).resolve().parent
+_CANDIDATES = [
+    _SELF_DIR,                 # runtime_config.py 在 workspace 根（如 /root/.openclaw/workspace/）
+    _SELF_DIR.parent,          # runtime_config.py 在子目录（如 self-evolution/）
+]
+_DEFAULT_WORKSPACE = next(
+    (c for c in _CANDIDATES if (c / "X记忆").exists() or (c / "X-Memory").exists()),
+    _SELF_DIR,
+)
 WORKSPACE = Path(os.environ.get(
     "OPENCLAW_WORKSPACE",
-    Path(__file__).parent,  # 默认: runtime_config.py 所在目录
+    _DEFAULT_WORKSPACE,
 ))
 
 # 统一 memory.db 路径 — 唯一真源

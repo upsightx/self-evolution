@@ -13,8 +13,23 @@ Evolution History Visualizer — 进化历史报告生成器。
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
+
+# Path setup so db_common and runtime_config can be found
+_modules = Path(__file__).parent
+_workspace = _modules.parent
+for p in [str(_workspace), str(_modules)]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+try:
+    from runtime_config import XMEMORY_PATH
+    if str(XMEMORY_PATH) not in sys.path:
+        sys.path.insert(0, str(XMEMORY_PATH))
+except ImportError:
+    pass
 
 from db_common import get_db
 from causal_validator import get_verification_report

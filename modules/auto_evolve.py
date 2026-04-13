@@ -128,7 +128,7 @@ def evolve(
                 print(f"⏹️ Stopped: {full_result['stopped_reason']}")
                 break
 
-            prev_avg_score = after_avg_score if 'after_avg_score' in dir() else after_avg
+            prev_avg_score = after_avg
         else:
             full_result["stopped_reason"] = "No capability data"
             break

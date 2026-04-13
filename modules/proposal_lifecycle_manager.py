@@ -24,6 +24,7 @@ Proposal Lifecycle Manager — 提案生命周期管理器。
 from __future__ import annotations
 
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -114,6 +115,19 @@ VALID_TRANSITIONS = {
 TERMINAL_STATES = {"rejected", "deprecated", "cancelled"}
 
 
+def _sanitize_html(text: str) -> str:
+    """Strip HTML tags from text, handling <img> tags gracefully."""
+    if not text:
+        return text or ""
+    # Remove <img> tags entirely (they have no text content)
+    text = re.sub(r'<img[^>]*>', '', text)
+    # Remove all other HTML tags, keep inner text
+    text = re.sub(r'<[^>]+>', '', text)
+    # Collapse whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
 def _ensure_schema():
     db = get_db()
     db.executescript(PROPOSALS_SCHEMA)
@@ -148,6 +162,14 @@ def create_proposal(
     Returns:
         {"success": bool, "proposal_id": str, "message": str}
     """
+    # Sanitize HTML from title and summary (defense against external learning injection)
+    title = _sanitize_html(title)
+    summary = _sanitize_html(summary)
+    if not title:
+        title = f"(untitled-{proposal_id[:16]})"
+    if not summary:
+        summary = "(no summary provided)"
+
     _ensure_schema()
     db = get_db()
 

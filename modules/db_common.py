@@ -13,16 +13,26 @@ from pathlib import Path
 # 优先从 runtime_config 获取统一路径
 try:
     _workspace = Path(__file__).resolve().parent.parent
+    # Handle symlink: if modules/ -> self-evolution/modules/, go up one more
+    if not (_workspace / "runtime_config.py").exists() and (_workspace.parent / "runtime_config.py").exists():
+        _workspace = _workspace.parent
     if str(_workspace) not in sys.path:
         sys.path.insert(0, str(_workspace))
     from runtime_config import MEMORY_DB_PATH
     DB_PATH = MEMORY_DB_PATH
 except ImportError:
-    # Fallback: 环境变量 > 本地（指向 X记忆 主库）
-    _fallback = Path(__file__).resolve().parent.parent / "X记忆" / "memory.db"
-    DB_PATH = Path(os.environ.get("OPENCLAW_MEMORY_DB",
-                                   os.environ.get("SELF_EVOLUTION_DB",
-                                                   str(_fallback))))
+    # Fallback: 环境变量 > 智能检测 > 本地硬编码
+    _env_db = os.environ.get("OPENCLAW_MEMORY_DB", "")
+    if _env_db:
+        DB_PATH = Path(_env_db)
+    else:
+        # Try multiple candidate locations
+        _base = Path(__file__).resolve().parent.parent
+        _candidates = [
+            _base / "X记忆" / "memory.db",
+            _base.parent / "X记忆" / "memory.db",
+        ]
+        DB_PATH = next((c for c in _candidates if c.exists()), _candidates[0])
 
 
 def get_db(db_path=None):

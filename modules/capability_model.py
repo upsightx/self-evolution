@@ -27,6 +27,20 @@ import argparse
 from datetime import datetime, timedelta
 from pathlib import Path
 
+# Path setup so db_common and runtime_config can be found
+_modules = Path(__file__).parent
+_workspace = _modules.parent
+for p in [str(_workspace), str(_modules)]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+try:
+    from runtime_config import XMEMORY_PATH
+    if str(XMEMORY_PATH) not in sys.path:
+        sys.path.insert(0, str(XMEMORY_PATH))
+except ImportError:
+    pass
+
 from db_common import DB_PATH, get_db
 
 SCHEMA = """
