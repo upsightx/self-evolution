@@ -274,7 +274,8 @@ def _run_single_round(min_pattern_count: int, auto_execute: bool, max_changes: i
                 category="goal_gap",
                 source_type="goal_tree",
                 priority=gap.get("priority", "P1"),
-                target_module=gap.get("target", ""),
+                target_scope=gap.get("target", ""),
+                target_module="goal_gap",
                 change_description=gap.get("suggestion", ""),
                 initial_status="draft",
                 created_by="auto_evolve",
@@ -294,6 +295,7 @@ def _run_single_round(min_pattern_count: int, auto_execute: bool, max_changes: i
                 category="capability_weakness",
                 source_type="capability_model",
                 priority="P1" if w.get("score", 100) < 50 else "P2",
+                target_scope=w.get("suggestion", ""),  # COMPAT: no file target for capability weaknesses
                 target_module=w.get("name", ""),
                 change_description=w.get("suggestion", ""),
                 initial_status="draft",

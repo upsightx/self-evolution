@@ -83,7 +83,7 @@ DANGEROUS_PATTERNS = [
 def register_external_learning_proposal(
     proposal_id: str,
     summary: str,
-    target_module: str = "",
+    target_scope: str = "",  # COMPAT: param named target_module historically; renamed to target_scope per schema
     change_description: str = "",
 ) -> dict:
     """Register an external learning proposal.
@@ -93,7 +93,7 @@ def register_external_learning_proposal(
     Args:
         proposal_id: Unique ID for the proposal
         summary: Proposal summary
-        target_module: Target module to improve
+        target_scope: Target file path (schema: target_scope = file path, target_module = task type)
         change_description: Human-readable description
 
     Returns:
@@ -110,7 +110,8 @@ def register_external_learning_proposal(
             category="external_learning",
             source_type="external_learning",
             source_ref=proposal_id,
-            target_module=target_module,
+            target_scope=target_scope,
+            target_module="external_learning",
             change_description=change_description,
             initial_status="draft",
         )
@@ -330,7 +331,7 @@ Please fix the issue and regenerate the patch.
                     summary=suggestion,
                     category=task_type,
                     source_type="evolution_executor",
-                    target_module=target_file,
+                    target_scope=target_file,
                     change_description=change_description,
                     initial_status="experimenting",
                 )
@@ -520,11 +521,12 @@ def rollback(change_id: str) -> dict:
     if not proposal or not proposal.get("proposal_id"):
         return {"success": False, "message": f"Change {change_id} not found"}
 
-    target_module = proposal.get("target_module", "")
-    if not target_module:
-        return {"success": False, "message": f"No target_module recorded for {change_id}"}
+    # Schema contract: target_scope = file path, target_module = task/capability type
+    target_scope = proposal.get("target_scope", "") or proposal.get("target_module", "")
+    if not target_scope:
+        return {"success": False, "message": f"No target file (target_scope) recorded for {change_id}"}
 
-    target_path = WORKSPACE / target_module
+    target_path = WORKSPACE / target_scope
 
     # Find backup
     backup_dir = WORKSPACE / "memory" / "evolution_backups"
@@ -532,10 +534,10 @@ def rollback(change_id: str) -> dict:
         return {"success": False, "message": "Backup directory not found"}
 
     # Find most recent backup for this target
-    stem = Path(target_module).stem
-    candidates = sorted(backup_dir.glob(f"{stem}_*{Path(target_module).suffix}"), reverse=True)
+    stem = Path(target_scope).stem
+    candidates = sorted(backup_dir.glob(f"{stem}_*{Path(target_scope).suffix}"), reverse=True)
     if not candidates:
-        return {"success": False, "message": f"No backup found for {target_module}"}
+        return {"success": False, "message": f"No backup found for {target_scope}"}
 
     backup_path = candidates[0]
 
