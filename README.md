@@ -1,159 +1,146 @@
-# Self-Evolution — 主动能力进化引擎
-
-> 发现缺口 → 立即行动 → 找工具/写代码 → 测试验证 → 固化能力
-
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+# Self-Evolution：主动能力进化引擎
 
 ## 是什么
 
-Self-Evolution 是一个主动能力进化引擎。它不等失败积累，而是实时检测能力缺口并立即创建实验去解决。
+`self-evolution` 是一套主动能力进化系统，用来把“发现缺口、创建提案、执行实验、验证效果、固化能力”串成闭环。
 
-与 [X-Memory](https://github.com/upsightx/X-Memory)（统一记忆层）和 external-learning（外部学习）配合，形成完整的自我进化闭环。
+它不是简单的自动修 bug 脚本，而是一条持续运行的进化主链：
+- 从信号里发现问题
+- 把问题路由成 proposal
+- 用统一状态机推进 proposal
+- 在执行后做归因验证
+- 把结果写回统一记忆层
 
-## 核心理念
+## 这次收口后的核心原则
 
-**旧思路（被动）：** 等失败积累 5 次 → 分析模式 → 提建议 → 等审批
+- `proposal_lifecycle_manager.py` 是 proposal 状态的唯一真源
+- proposal 相关表只有一个 writer
+- `evolution_changes` 只保留为 legacy 只读兼容面
+- 统一通过 `X-Memory` 提供的记忆底座落数据
 
-**新思路（主动）：** 一次失败就记录 → 两次就报警 → 发现缺口立即创建实验 → 找工具写代码测试 → 固化能力
+## 核心链路
 
-## 架构
-
+```text
+外部信号 / 任务结果 / 能力缺口
+        ↓
+proposal_bridge / capability_detector
+        ↓
+evolution_orchestrator
+        ↓
+proposal_lifecycle_manager
+        ↓
+evolution_executor
+        ↓
+causal_validator
+        ↓
+memory_governor / X-Memory
 ```
-┌─────────────────────────────────────────────────┐
-│                 Evolution Orchestrator            │
-│         (统一编排：信号收集 → 路由 → 推进)          │
-└──────┬──────────┬──────────┬──────────┬──────────┘
-       │          │          │          │
-       ▼          ▼          ▼          ▼
-  Capability   Proposal    Memory    External
-  Detector     Lifecycle   Governor  Learning
-  (探测缺口)   (状态机)    (去重/治理) (外部信号)
-       │          │          │          │
-       ▼          ▼          ▼          ▼
-  ┌─────────────────────────────────────────┐
-  │           X-Memory (统一记忆层)           │
-  │    observations · proposals · events     │
-  └─────────────────────────────────────────┘
-```
 
-## 模块清单
+## 主要模块
 
-### 核心引擎
+### 编排与状态
 
 | 模块 | 职责 |
 |------|------|
-| `evolution_orchestrator.py` | 统一编排入口。信号去重、路由、提案推进、心跳调度 |
-| `capability_detector.py` | 主动能力探测。检测缺失/衰退/挣扎/可靠能力，立即触发实验 |
-| `proposal_lifecycle_manager.py` | 提案状态唯一真源。draft→pending→approved→experimenting→validated→released |
-| `evolution_runtime.py` | 统一事件日志 + 生命周期状态机 + 心跳入口 |
-| `auto_evolve.py` | 自动进化主循环。能力基线→缺口检测→建议生成→执行→验证 |
+| `evolution_orchestrator.py` | 统一编排入口：收信号、去重、路由、推进 |
+| `proposal_lifecycle_manager.py` | proposal 状态唯一真源 |
+| `evolution_runtime.py` | 统一事件日志与运行时入口 |
+| `auto_evolve.py` | 自动进化主循环 |
 
 ### 执行与验证
 
 | 模块 | 职责 |
 |------|------|
-| `evolution_executor.py` | 文件变更执行器。LLM 生成补丁 + Docker sandbox 测试 + 自动回滚 |
-| `causal_validator.py` | 归因验证。对比变更前后成功率，判定 effective/uncertain/ineffective |
-| `llm_provider.py` | 统一 LLM 抽象。SiliconFlow → OpenRouter 自动 fallback |
+| `evolution_executor.py` | 执行提案、应用变更、做 sandbox 测试 |
+| `causal_validator.py` | 验证变更是否真的有效 |
+| `llm_provider.py` | 统一模型调用与 fallback |
 
-### 数据采集与治理
+### 采集与治理
 
 | 模块 | 职责 |
 |------|------|
-| `task_outcome_hook.py` | 任务结果自动记录。同时写入 task_outcomes 和 observations |
-| `memory_governor.py` | 记忆治理。内容去重 + lineage 追踪 + bridge 标记 + 防自激 |
-| `proposal_bridge.py` | external-learning → self-evolution 桥接 |
+| `capability_detector.py` | 主动发现能力缺口 |
+| `task_outcome_hook.py` | 记录任务结果 |
+| `memory_governor.py` | 去重、lineage、反自激 |
+| `proposal_bridge.py` | external-learning 到 self-evolution 的桥接 |
 
 ### 辅助模块
 
 | 模块 | 职责 |
 |------|------|
 | `goal_tree.py` | 目标树管理 |
-| `capability_model.py` | 能力自画像（从 task_outcomes 计算各维度评分）|
-| `critic_engine.py` | 外部学习质量审查 |
-| `skillify.py` | 自动技能化（高频成功模式 → Skill 草稿）|
-| `evolution_history.py` | 进化历史报告生成 |
+| `capability_model.py` | 能力画像 |
+| `critic_engine.py` | 质量审查 |
 | `learning_conversion.py` | 学习转化率追踪 |
 | `agenda_planner.py` | 动态议程调度 |
 
-### 共享基础
-
-| 模块 | 职责 |
-|------|------|
-| `runtime_config.py` | 统一配置真源（DB 路径、模块路径）|
-| `db_common.py` | 数据库连接（指向 X-Memory 的 memory.db）|
-| `memory_db.py` | Thin adapter，委托 X-Memory 的真实实现 |
-
-## 数据流
-
-```
-外部学习发现信号
-    ↓
-proposal_bridge 分流（P0→提案, P1→候选, P2→跳过）
-    ↓
-evolution_orchestrator 收集信号 + 去重 + 路由
-    ↓
-capability_detector 检测缺口（缺失/衰退/挣扎）
-    ↓
-proposal_lifecycle_manager 管理状态机
-    ↓
-evolution_executor 在 sandbox 中执行补丁
-    ↓
-causal_validator 验证效果
-    ↓
-memory_governor 写入记忆（带 lineage，防重复）
-```
-
 ## 快速开始
 
+### 1. 记录任务结果
+
 ```bash
-# 记录任务结果
 python3 modules/task_outcome_hook.py record coding opus 1 --desc "完成代码修复"
+```
 
-# 检测能力状态
+### 2. 检测能力缺口
+
+```bash
 python3 modules/capability_detector.py detect
+```
 
-# 运行编排器心跳
+### 3. 推进 proposal 状态机
+
+```bash
+python3 modules/proposal_lifecycle_manager.py list --status draft
+python3 modules/proposal_lifecycle_manager.py transition <proposal_id> pending_review
+```
+
+### 4. 运行编排器心跳
+
+```bash
 python3 modules/evolution_orchestrator.py heartbeat
-
-# 查看提案
-python3 modules/proposal_lifecycle_manager.py list
-
-# 运行自动进化
-python3 modules/auto_evolve.py --min-patterns 1
 ```
 
-## 统一数据库
+## 测试
 
-所有模块共享 X-Memory 的 `memory.db`，通过 `runtime_config.py` 配置：
-
-```python
-# runtime_config.py
-MEMORY_DB_PATH = WORKSPACE / "X记忆" / "memory.db"  # 唯一真源
+```bash
+cd /root/.openclaw/workspace/self-evolution
+python3 -m pytest -q \
+  test_proposal_lifecycle.py \
+  test_legacy_readonly_contract.py \
+  test_proposals_single_writer.py \
+  test_legacy_readers_whitelist.py
 ```
 
-关键表：
-- `observations` — 观察记录（含 description, task_type, embedding_status）
-- `task_outcomes` — 任务执行结果
-- `proposals` — 提案（单一状态机）
-- `evolution_signals` — 进化信号（去重）
-- `evolution_events` — 事件日志
-- `memory_lineage` — 记忆来源链
-- `memory_dedup_hashes` — 内容去重
+当前测试重点：
+- proposal 状态机是否按规则推进
+- proposal 相关表是否仍保持单写入口
+- `evolution_changes` 是否仍为只读兼容层
+- 哪些模块允许读取 legacy 表，是否越界
 
-## 设计原则
+## 设计说明
 
-1. **主动而非被动** — 不等失败积累，发现缺口立即行动
-2. **单一真源** — 每类状态只有一个权威模块和一个权威字段
-3. **显式生命周期** — 提案、实验、发布都是显式对象，不散落在 observation 里
-4. **防自激** — 系统写回的数据不会被自己重新摄入
-5. **优雅降级** — 无 LLM 时降级为诊断模式，不崩溃
+### 为什么不直接删掉 `evolution_changes`
 
-## 依赖
+因为系统里仍有一部分 legacy 读取路径依赖它。现在更稳的做法是：
+- 先切断写路径
+- 再把读路径白名单化
+- 最后视迁移情况再考虑彻底退役
 
-- Python 3.10+
-- SQLite（内置）
-- [X-Memory](https://github.com/upsightx/X-Memory)（统一记忆层）
-- Docker（可选，用于 sandbox 测试）
-- SiliconFlow / OpenRouter API key（可选，用于 LLM 补丁生成）
+### 为什么要强调 proposal 单写入口
+
+如果多个模块都能直接写 `proposals`、`proposal_transitions`、`proposal_evidence`，状态机会很快漂移，最后谁也说不清“哪个状态是真的”。
+
+所以这次重构最重要的一刀就是：
+- 只有 `proposal_lifecycle_manager.py` 能直接写 proposal 相关表
+- 其他模块只能通过它来改状态
+
+## 当前状态
+
+这版已经完成：
+- proposal 状态真源收口
+- proposal 单写入口护栏化
+- legacy 只读边界测试化
+- 与 `X-Memory` 的统一底座关系更清晰
+
+剩下保留的是可控兼容层，不是主链上的结构性问题。
