@@ -68,7 +68,7 @@ def chat(
     system: str = "",
     temperature: float = 0.3,
     max_tokens: int = 2000,
-    timeout: int = 60,
+    timeout: int = 120,
 ) -> LLMResponse:
     """Send a chat completion request with automatic provider fallback.
 
@@ -120,15 +120,24 @@ def chat(
             headers.update(cfg["headers_extra"])
 
             req = urllib.request.Request(cfg["url"], data=data, headers=headers)
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
-                content = result["choices"][0]["message"]["content"].strip()
-                return LLMResponse(
-                    content=content,
-                    provider=provider_name,
-                    model=cfg["model"],
-                    success=True,
-                )
+            req = urllib.request.Request(cfg["url"], data=data, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    result = json.loads(resp.read().decode("utf-8"))
+                    content = result["choices"][0]["message"]["content"].strip()
+                    return LLMResponse(
+                        content=content,
+                        provider=provider_name,
+                        model=cfg["model"],
+                        success=True,
+                    )
+            except urllib.error.HTTPError as e:
+                # Retry on 502/503/504
+                if e.code in (502, 503, 504):
+                    last_error = f"{provider_name}: HTTP {e.code} (retryable)"
+                    print(f"[llm_provider] {provider_name} HTTP {e.code}, retrying...")
+                    continue
+                raise
 
         except Exception as e:
             last_error = f"{provider_name}: {e}"
@@ -180,7 +189,7 @@ Instructions:
 Return the full modified code below:
 """
 
-    response = chat(prompt, temperature=0.3, max_tokens=4000, timeout=90)
+    response = chat(prompt, temperature=0.3, max_tokens=4000, timeout=120)
     if not response.success:
         print(f"[llm_provider] Code patch generation failed: {response.error}")
         return None

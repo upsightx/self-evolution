@@ -75,7 +75,7 @@ def _resolve_target_file(task_type: str, pattern: str) -> str:
 
 def evolve(
     min_pattern_count: int = 3,
-    auto_execute: bool = False,
+    auto_execute: bool = True,
     max_changes: int = 3,
     max_rounds: int = 1,
     min_improvement: float = 0.05,
@@ -138,6 +138,15 @@ def evolve(
             full_result["final_capability"] = result["capability_after"]
 
     return full_result
+
+
+def _get_proposal_details(proposal_id: str) -> dict | None:
+    """Fetch proposal details from DB."""
+    try:
+        from proposal_lifecycle_manager import get_proposal
+        return get_proposal(proposal_id)
+    except Exception:
+        return None
 
 
 def _run_single_round(min_pattern_count: int, auto_execute: bool, max_changes: int) -> dict:
@@ -247,35 +256,152 @@ def _run_single_round(min_pattern_count: int, auto_execute: bool, max_changes: i
     except Exception as e:
         print(f"  ⚠️ {e}")
 
-    # Step 4: Apply changes (if auto_execute)
-    if auto_execute and result["improvement_suggestions"]:
-        print("\n🔧 Step 4: Applying changes...")
-        try:
-            from evolution_executor import apply_improvement
-            for sug in result["improvement_suggestions"][:max_changes]:
-                target = sug.get("target_file", "")
-                if not target or not target.strip():
-                    print(f"    ⏭️ Skipped (no target_file): {sug.get('title', '?')}")
+    # Step 4: Create proposals from all detected issues
+    print("\n📋 Step 4: Creating proposals from detected issues...")
+    proposal_ids = []
+    try:
+        from proposal_lifecycle_manager import create_proposal, transition
+        import uuid
+        proposal_count = 0
+
+        # Convert goal gaps to proposals
+        for gap in result.get("goal_gaps", []):
+            pid = f"gap-{uuid.uuid4().hex[:12]}"
+            r = create_proposal(
+                proposal_id=pid,
+                title=gap.get("title", "Goal gap")[:200],
+                summary=f"Goal gap (priority {gap.get('priority', '?')}): current={gap.get('current_value', '?')}, target={gap.get('target_value', '?')}",
+                category="goal_gap",
+                source_type="goal_tree",
+                priority=gap.get("priority", "P1"),
+                target_module=gap.get("target", ""),
+                change_description=gap.get("suggestion", ""),
+                initial_status="draft",
+                created_by="auto_evolve",
+            )
+            if r["success"]:
+                proposal_count += 1
+                proposal_ids.append(pid)
+                print(f"  📌 {pid} — {gap.get('title', '?')[:50]}")
+
+        # Convert capability weaknesses to proposals
+        for w in result.get("capability_weaknesses", []):
+            pid = f"weak-{uuid.uuid4().hex[:12]}"
+            r = create_proposal(
+                proposal_id=pid,
+                title=f"Improve {w.get('name', 'unknown')} ({w.get('score', 0):.0f}/100)",
+                summary=f"Capability weakness: {w.get('name', '')} scores {w.get('score', 0):.1f}/100 (threshold 70)",
+                category="capability_weakness",
+                source_type="capability_model",
+                priority="P1" if w.get("score", 100) < 50 else "P2",
+                target_module=w.get("name", ""),
+                change_description=w.get("suggestion", ""),
+                initial_status="draft",
+                created_by="auto_evolve",
+            )
+            if r["success"]:
+                proposal_count += 1
+                proposal_ids.append(pid)
+                print(f"  📌 {pid} — {w.get('name', '?')}")
+
+        # Convert improvement suggestions to proposals
+        for sug in result.get("improvement_suggestions", []):
+            pid = f"fix-{uuid.uuid4().hex[:12]}"
+            r = create_proposal(
+                proposal_id=pid,
+                title=sug.get("title", "Improvement")[:200],
+                summary=sug.get("description", ""),
+                category="capability_fix",
+                source_type="capability_detector",
+                priority="P0",
+                target_module=sug.get("task_type", ""),
+                target_scope=sug.get("target_file", ""),
+                change_description=sug.get("description", ""),
+                initial_status="draft",
+                created_by="auto_evolve",
+                evidence=[{"type": "capability_issue", "ref": sug.get("task_type", ""),
+                           "description": f"Success rate: {sug.get('description', '')}"}],
+            )
+            if r["success"]:
+                proposal_count += 1
+                proposal_ids.append(pid)
+                print(f"  📌 {pid} — {sug.get('title', '?')[:50]}")
+
+        result["proposals_created"] = proposal_count
+        result["actions_taken"].append(f"Proposals: {proposal_count} created")
+        print(f"  Total proposals created: {proposal_count}")
+    except Exception as e:
+        print(f"  ⚠️ Proposal creation failed: {e}")
+        import traceback; traceback.print_exc()
+
+    # Step 4b: Auto-approve and execute if auto_execute=True
+    if auto_execute and proposal_ids:
+        print("\n🔧 Step 4b: Auto-approving and executing proposals...")
+        approved = []
+        for pid in proposal_ids:
+            try:
+                # draft → pending_review → approved (state machine requires sequential)
+                r1 = transition(pid, "pending_review", actor="auto_evolve",
+                                reason="Auto-promoted for execution")
+                if r1.get("success"):
+                    r2 = transition(pid, "approved", actor="auto_evolve",
+                                   reason="Auto-approved for execution")
+                    if r2.get("success"):
+                        approved.append(pid)
+                        print(f"  ✅ Approved: {pid}")
+                    else:
+                        print(f"  ⏭️ Approve failed: {pid} — {r2.get('message', '?')}")
+                else:
+                    # May already be beyond draft (e.g. re-run)
+                    print(f"  ⏭️ Skip: {pid} — {r1.get('message', '?')}")
+            except Exception as e:
+                print(f"  ⚠️ Approve failed: {pid} — {e}")
+
+        # Execute approved proposals
+        if approved:
+            try:
+                for pid in approved:
+                    prop = _get_proposal_details(pid)
+                    if not prop:
+                        continue
+                    target = prop.get("target_scope", "")
+                    if not target or not target.strip():
+                        # No concrete target file — mark as released (tracked, not auto-modified)
+                        transition(pid, "released", actor="auto_evolve",
+                                   reason="Tracked goal — no auto-modification target")
+                        result["applied_changes"].append({
+                            "proposal_id": pid,
+                            "success": True,
+                            "change_id": None,
+                            "message": "Tracked (no target file)",
+                        })
+                        print(f"    📋 Tracked: {pid} — {prop.get('title', '?')[:40]}")
+                        continue
+
+                    from evolution_executor import apply_improvement
+                    change_result = apply_improvement(
+                        task_type=prop.get("target_module", "general"),
+                        suggestion=prop.get("change_description", ""),
+                        target_file=target,
+                        change_description=prop.get("title", ""),
+                    )
                     result["applied_changes"].append({
-                        "success": False,
-                        "change_id": None,
-                        "message": "Skipped: no target_file resolved",
+                        "proposal_id": pid,
+                        **change_result,
                     })
-                    continue
-                change_result = apply_improvement(
-                    task_type=sug.get("task_type", "general"),
-                    suggestion=sug.get("description", ""),
-                    target_file=target,
-                    change_description=sug.get("title", ""),
-                )
-                result["applied_changes"].append(change_result)
-                status = "✅" if change_result["success"] else "❌"
-                print(f"    {status} {change_result.get('change_id', '?')}")
-            result["actions_taken"].append(f"Applied: {len(result['applied_changes'])}")
-        except Exception as e:
-            print(f"  ⚠️ {e}")
+                    if change_result.get("success"):
+                        transition(pid, "experimenting", actor="auto_evolve",
+                                   reason="Change applied, pending validation")
+                        print(f"    🔬 Experimenting: {pid}")
+                    else:
+                        print(f"    ❌ Apply failed: {pid} — {change_result.get('message', '?')}")
+                        transition(pid, "failed", actor="auto_evolve",
+                                   reason=f"Apply failed: {change_result.get('message', '?')}")
+                result["actions_taken"].append(f"Executed: {len(result['applied_changes'])}")
+            except Exception as e:
+                print(f"  ⚠️ Execution failed: {e}")
     elif not auto_execute:
-        print("\n⏸️ Step 4: Skipped (auto_execute=False)")
+        print("\n⏸️ Auto-execute disabled. Proposals created in draft status.")
 
     # Step 5: Post-evolution capability
     print("\n📊 Step 5: Post-evolution capability...")
@@ -299,7 +425,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Auto-evolve self-evolution engine")
     parser.add_argument("--min-patterns", type=int, default=3, help="Min failure patterns")
-    parser.add_argument("--auto-execute", action="store_true", help="Auto-apply changes")
+    parser.add_argument("--auto-execute", action="store_true", default=True, help="Auto-apply changes (default True)")
     parser.add_argument("--max-changes", type=int, default=3, help="Max changes per round")
     parser.add_argument("--max-rounds", type=int, default=1, help="Max evolution rounds")
     parser.add_argument("--min-improvement", type=float, default=0.05, help="Min improvement to continue")

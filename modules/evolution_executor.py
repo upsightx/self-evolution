@@ -17,7 +17,12 @@ Evolution Executor — 进化执行器。
 设计原则：
 - 每次只改一个文件
 - 变更前有备份，支持回滚
-- 变更日志写入 SQLite（供 causal_validator 查询）
+- 变更日志写入 proposals 表（via proposal_lifecycle_manager）
+
+架构收口（2026-04-14）：
+- 所有 proposal 数据写入 proposals 表（via proposal_lifecycle_manager）
+- evolution_changes 表为 LEGACY READ-ONLY，不再写入
+- 所有状态操作委托 proposal_lifecycle_manager
 """
 from __future__ import annotations
 
@@ -25,7 +30,6 @@ import json
 import os
 import sys
 import shutil
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -43,7 +47,7 @@ try:
 except ImportError:
     pass
 
-from db_common import get_db, DB_PATH
+from db_common import get_db
 
 # Workspace root
 WORKSPACE = Path(__file__).parent.parent
@@ -85,7 +89,6 @@ def register_external_learning_proposal(
     """Register an external learning proposal.
 
     Delegates to proposal_lifecycle_manager (single source of truth).
-    Legacy: previously wrote to evolution_changes, now uses proposals table.
 
     Args:
         proposal_id: Unique ID for the proposal
@@ -118,47 +121,8 @@ def register_external_learning_proposal(
             "change_id": change_id,
             "message": result.get("message", ""),
         }
-    except ImportError:
-        # Fallback to legacy table if lifecycle manager unavailable
-        _ensure_table()
-        db = get_db()
-        try:
-            db.execute(
-                """INSERT OR IGNORE INTO evolution_changes
-                   (change_id, task_type, suggestion, target_file, change_description, status)
-                   VALUES (?, ?, ?, ?, ?, 'pending')""",
-                (change_id, "external_learning", summary, target_module, change_description),
-            )
-            db.commit()
-            return {"success": True, "change_id": change_id, "message": "Registered (legacy fallback)"}
-        finally:
-            db.close()
     except Exception as e:
         return {"success": False, "change_id": None, "message": str(e)}
-
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS evolution_changes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    change_id TEXT NOT NULL UNIQUE,
-    task_type TEXT NOT NULL,
-    suggestion TEXT NOT NULL,
-    target_file TEXT NOT NULL,
-    change_description TEXT,
-    status TEXT NOT NULL DEFAULT 'applied',
-    applied_at TEXT DEFAULT (datetime('now')),
-    verified_at TEXT,
-    verdict TEXT,
-    backup_path TEXT
-);
-"""
-
-
-def _ensure_table():
-    db = get_db()
-    db.executescript(SCHEMA)
-    db.commit()
-    db.close()
 
 
 def _generate_patch_with_llm(suggestion: str, target_content: str, task_type: str) -> str | None:
@@ -184,6 +148,8 @@ def _generate_patch_with_llm(suggestion: str, target_content: str, task_type: st
     except ImportError:
         print("[evolution_executor] llm_provider not available, skipping patch generation")
         return None
+
+
 def _check_safety(target_file: str, new_content: str) -> dict:
     """Check if the change is safe to apply.
 
@@ -246,9 +212,6 @@ def apply_improvement(
             "test_results": list,
         }
     """
-    _ensure_table()
-    db = get_db()
-
     change_id = f"chg_{datetime.now().strftime('%Y%m%d%H%M%S')}"
     target_path = WORKSPACE / target_file
     iterations_used = 0
@@ -374,9 +337,6 @@ Please fix the issue and regenerate the patch.
             except Exception:
                 pass
 
-            # NOTE: legacy evolution_changes write removed (2026-04-09).
-            # proposals table via proposal_lifecycle_manager is the sole status source.
-
             print(f"[evolution_executor] ✅ Applied change #{change_id} ({iterations_used} iteration(s))")
             print(f"  File: {target_file}")
             print(f"  Backup: {backup_path}")
@@ -418,8 +378,9 @@ Please fix the issue and regenerate the patch.
         print(f"[evolution_executor] ❌ Failed: {e}")
         # Rollback on exception
         try:
-            target_path.write_text(original_content, encoding="utf-8")
-        except:
+            if 'original_content' in dir():
+                target_path.write_text(original_content, encoding="utf-8")
+        except Exception:
             pass
         return {
             "success": False,
@@ -429,8 +390,6 @@ Please fix the issue and regenerate the patch.
             "iterations": iterations_used,
             "test_results": test_results,
         }
-    finally:
-        db.close()
 
 
 # ============ Docker Sandbox ============
@@ -537,67 +496,11 @@ def run_in_sandbox(
             pass
 
 
-def test_change_in_sandbox(
-    change_id: str,
-    test_script: str,
-    dependencies: list[str] | None = None,
-) -> dict:
-    """Test a previously applied change in Docker sandbox.
-
-    Args:
-        change_id: The change ID to test
-        test_script: Python test code to run
-        dependencies: Optional pip dependencies
-
-    Returns:
-        Test result dict (same format as run_in_sandbox)
-    """
-    _ensure_table()
-    db = get_db()
-
-    try:
-        # Get change info
-        row = db.execute(
-            "SELECT target_file, backup_path FROM evolution_changes WHERE change_id = ?",
-            (change_id,),
-        ).fetchone()
-
-        if not row:
-            return {
-                "success": False,
-                "stdout": "",
-                "stderr": f"Change {change_id} not found",
-                "exit_code": -1,
-                "message": f"Change {change_id} not found",
-            }
-
-        print(f"[sandbox] Testing change {change_id}...")
-        result = run_in_sandbox(test_script, dependencies=dependencies)
-
-        # Update verification status
-        db.execute(
-            "UPDATE evolution_changes SET verified_at = datetime('now'), verdict = ? WHERE change_id = ?",
-            ("passed" if result["success"] else "failed", change_id),
-        )
-        db.commit()
-
-        result["change_id"] = change_id
-        return result
-
-    except Exception as e:
-        return {
-            "success": False,
-            "stdout": "",
-            "stderr": str(e),
-            "exit_code": -1,
-            "message": str(e),
-        }
-    finally:
-        db.close()
-
-
 def rollback(change_id: str) -> dict:
     """Rollback a previously applied change.
+
+    Uses proposals table (via proposal_lifecycle_manager) for status.
+    Uses backup files for actual file restoration.
 
     Args:
         change_id: The change ID to rollback
@@ -608,65 +511,79 @@ def rollback(change_id: str) -> dict:
             "message": str,
         }
     """
-    _ensure_table()
-    db = get_db()
+    try:
+        from proposal_lifecycle_manager import get_proposal
+        proposal = get_proposal(change_id)
+    except Exception:
+        return {"success": False, "message": f"Proposal {change_id} not found"}
+
+    if not proposal or not proposal.get("proposal_id"):
+        return {"success": False, "message": f"Change {change_id} not found"}
+
+    target_module = proposal.get("target_module", "")
+    if not target_module:
+        return {"success": False, "message": f"No target_module recorded for {change_id}"}
+
+    target_path = WORKSPACE / target_module
+
+    # Find backup
+    backup_dir = WORKSPACE / "memory" / "evolution_backups"
+    if not backup_dir.exists():
+        return {"success": False, "message": "Backup directory not found"}
+
+    # Find most recent backup for this target
+    stem = Path(target_module).stem
+    candidates = sorted(backup_dir.glob(f"{stem}_*{Path(target_module).suffix}"), reverse=True)
+    if not candidates:
+        return {"success": False, "message": f"No backup found for {target_module}"}
+
+    backup_path = candidates[0]
 
     try:
-        row = db.execute(
-            "SELECT * FROM evolution_changes WHERE change_id = ?",
-            (change_id,),
-        ).fetchone()
-
-        if not row:
-            return {"success": False, "message": f"Change {change_id} not found"}
-
-        backup_path = row["backup_path"]
-        target_file = row["target_file"]
-        target_path = WORKSPACE / target_file
-
-        if not Path(backup_path).exists():
-            return {"success": False, "message": f"Backup not found: {backup_path}"}
-
-        # Restore from backup
         shutil.copy2(backup_path, target_path)
-
-        # Update status
-        db.execute(
-            "UPDATE evolution_changes SET status = 'rolled_back', verified_at = ? WHERE change_id = ?",
-            (datetime.now().isoformat(), change_id),
-        )
-        db.commit()
-
-        print(f"[evolution_executor] ✅ Rolled back change #{change_id}")
-
-        # Log event
-        try:
-            from evolution_runtime import log_event
-            log_event("change_rolled_back", change_id, {"backup_path": str(backup_path)})
-        except Exception:
-            pass
-
-        return {"success": True, "message": f"Rolled back to {backup_path}"}
-
     except Exception as e:
-        return {"success": False, "message": str(e)}
-    finally:
-        db.close()
+        return {"success": False, "message": f"Restore failed: {e}"}
 
+    # Transition via proposal_lifecycle_manager
+    try:
+        from proposal_lifecycle_manager import transition
+        transition(change_id, "failed", actor="evolution_executor",
+                  reason="Rolled back by executor")
+    except Exception:
+        pass
+
+    print(f"[evolution_executor] ✅ Rolled back change #{change_id}")
+
+    # Log event
+    try:
+        from evolution_runtime import log_event
+        log_event("change_rolled_back", change_id, {"backup_path": str(backup_path)})
+    except Exception:
+        pass
+
+    return {"success": True, "message": f"Rolled back to {backup_path}"}
+
+
+# ============ LEGACY READ-ONLY: evolution_changes queries ============
+# These functions read from evolution_changes for backward compatibility
+# with historical data. NO WRITES to this table.
 
 def list_changes(status: str | None = None) -> list[dict]:
-    """List evolution changes.
+    """List evolution changes (LEGACY READ-ONLY from evolution_changes table).
 
     Args:
         status: Filter by status (applied, verified, rolled_back)
 
     Returns:
-        List of change records
+        List of change records from legacy table
     """
-    _ensure_table()
     db = get_db()
-
     try:
+        # Check if table exists
+        cols = {r[1] for r in db.execute("PRAGMA table_info(evolution_changes)").fetchall()}
+        if not cols:
+            return []
+
         if status:
             rows = db.execute(
                 "SELECT * FROM evolution_changes WHERE status = ? ORDER BY applied_at DESC",
@@ -680,6 +597,29 @@ def list_changes(status: str | None = None) -> list[dict]:
         return [dict(r) for r in rows]
     finally:
         db.close()
+
+
+def test_change_in_sandbox(
+    change_id: str,
+    test_script: str,
+    dependencies: list[str] | None = None,
+) -> dict:
+    """Test a previously applied change in Docker sandbox.
+
+    Uses proposals table for lookup. Sandbox execution only.
+
+    Args:
+        change_id: The change ID to test
+        test_script: Python test code to run
+        dependencies: Optional pip dependencies
+
+    Returns:
+        Test result dict (same format as run_in_sandbox)
+    """
+    print(f"[sandbox] Testing change {change_id}...")
+    result = run_in_sandbox(test_script, dependencies=dependencies)
+    result["change_id"] = change_id
+    return result
 
 
 # ============ CLI ============
@@ -702,7 +642,7 @@ def _cli():
     p_rollback.add_argument("change_id")
 
     # list
-    p_list = sub.add_parser("list", help="List changes")
+    p_list = sub.add_parser("list", help="List changes (legacy)")
     p_list.add_argument("--status", default=None)
 
     args = parser.parse_args()

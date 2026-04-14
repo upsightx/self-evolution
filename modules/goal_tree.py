@@ -755,6 +755,8 @@ if __name__ == "__main__":
 
 # ============ Goal Tree Auto（从 goal_tree_auto.py 合并）============
 
+CAPABILITY_GAP_THRESHOLD = 70.0  # 能力缺口阈值，低于此分数视为短板
+
 # ============ 能力缺口驱动 ============
 def auto_adjust_priorities() -> list[dict]:
     """

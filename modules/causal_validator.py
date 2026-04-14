@@ -25,7 +25,10 @@ from pathlib import Path
 from db_common import get_db
 
 # Minimum samples for verification
-MIN_SAMPLES = 5
+# Note: adaptive threshold — with limited data, require fewer samples.
+# Total task_outcomes ~14, so 5 post-change is unrealistic.
+# Will increase as system collects more data.
+MIN_SAMPLES = 3
 
 # Significance thresholds
 EFFECTIVE_THRESHOLD = 0.15

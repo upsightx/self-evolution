@@ -4,13 +4,13 @@ Evolution Runtime — 统一进化运行时。
 
 职责：
 - 统一事件日志（所有操作可追溯）
-- Proposal 生命周期状态机
-- 统一回滚协议
 - 心跳/cron 入口
 
-状态机：
-  draft → pending → approved → executing → applied → verified → archived
-                  ↘ rejected                ↘ rolled_back
+注意（2026-04-14 架构收口）：
+- Proposal 状态机已统一到 proposal_lifecycle_manager.py（唯一真源）
+- 本模块不再管理 lifecycle_status 或 evolution_changes 表
+- evolution_changes 表保留但标记为 LEGACY READ-ONLY
+- 所有 proposal 状态操作委托给 proposal_lifecycle_manager
 
 事件类型：
   proposal_created, proposal_approved, proposal_rejected,
@@ -57,38 +57,10 @@ CREATE INDEX IF NOT EXISTS idx_events_change ON evolution_events(change_id);
 CREATE INDEX IF NOT EXISTS idx_events_created ON evolution_events(created_at);
 """
 
-# Valid status transitions
-_TRANSITIONS = {
-    "draft":       ["pending", "rejected"],
-    "pending":     ["approved", "rejected"],
-    "approved":    ["executing"],
-    "executing":   ["applied", "failed"],
-    "applied":     ["verified", "rolled_back"],
-    "verified":    ["archived", "rolled_back"],
-    "failed":      ["pending", "archived"],  # can retry
-    "rolled_back": ["archived", "pending"],  # can retry
-    "rejected":    ["archived"],
-    "archived":    [],
-}
-
 
 def _ensure_schema():
     db = get_db()
     db.executescript(_SCHEMA)
-    # Migrate evolution_changes if needed
-    cols = {r[1] for r in db.execute("PRAGMA table_info(evolution_changes)").fetchall()}
-    if cols:  # table exists
-        if "lifecycle_status" not in cols:
-            db.execute("ALTER TABLE evolution_changes ADD COLUMN lifecycle_status TEXT DEFAULT NULL")
-        if "experiment_id" not in cols:
-            db.execute("ALTER TABLE evolution_changes ADD COLUMN experiment_id TEXT DEFAULT NULL")
-
-        # Fix legacy records: sync lifecycle_status from status where NULL
-        db.execute("""
-            UPDATE evolution_changes
-            SET lifecycle_status = status
-            WHERE lifecycle_status IS NULL AND status IS NOT NULL
-        """)
     db.commit()
     db.close()
 
@@ -168,189 +140,30 @@ def get_event_summary(days: int = 30) -> dict:
     }
 
 
-# ============ Lifecycle State Machine ============
-
-def transition(change_id: str, new_status: str, detail: str = "") -> dict:
-    """Transition a proposal/change to a new lifecycle status.
-
-    Enforces valid transitions. Logs event automatically.
-
-    Args:
-        change_id: The change to transition
-        new_status: Target status
-        detail: Reason or context
-
-    Returns:
-        {"success": bool, "old_status": str, "new_status": str, "message": str}
-    """
-    _ensure_schema()
-    db = get_db()
-
-    try:
-        row = db.execute(
-            "SELECT lifecycle_status, status FROM evolution_changes WHERE change_id = ?",
-            (change_id,),
-        ).fetchone()
-
-        if not row:
-            return {"success": False, "old_status": "", "new_status": new_status,
-                    "message": f"Change {change_id} not found"}
-
-        current = row["lifecycle_status"] or row["status"] or "applied"
-
-        # Normalize: if lifecycle_status is NULL but status is set, use status
-        # This handles legacy records created before lifecycle_status was added
-        if not row["lifecycle_status"] and row["status"]:
-            current = row["status"]
-            # Auto-fix: write the normalized status back
-            db.execute(
-                "UPDATE evolution_changes SET lifecycle_status = ? WHERE change_id = ?",
-                (current, change_id),
-            )
-            db.commit()
-
-        # Check valid transition
-        valid_next = _TRANSITIONS.get(current, [])
-        if new_status not in valid_next:
-            return {"success": False, "old_status": current, "new_status": new_status,
-                    "message": f"Invalid transition: {current} → {new_status}. Valid: {valid_next}"}
-
-        # Apply transition
-        db.execute(
-            "UPDATE evolution_changes SET lifecycle_status = ? WHERE change_id = ?",
-            (new_status, change_id),
-        )
-
-        # Also update legacy status field for backward compatibility
-        legacy_map = {
-            "applied": "applied",
-            "verified": "verified",
-            "rolled_back": "rolled_back",
-            "archived": "verified",
-        }
-        if new_status in legacy_map:
-            db.execute(
-                "UPDATE evolution_changes SET status = ? WHERE change_id = ?",
-                (legacy_map[new_status], change_id),
-            )
-
-        db.commit()
-
-        # Log event
-        event_map = {
-            "pending": "proposal_created",
-            "approved": "proposal_approved",
-            "rejected": "proposal_rejected",
-            "executing": "change_executing",
-            "applied": "change_applied",
-            "failed": "change_failed",
-            "rolled_back": "change_rolled_back",
-            "verified": "validation_completed",
-            "archived": "proposal_archived",
-        }
-        event_type = event_map.get(new_status, f"status_{new_status}")
-        log_event(event_type, change_id, {"from": current, "to": new_status, "detail": detail})
-
-        print(f"[evolution_runtime] {change_id}: {current} → {new_status}")
-        return {"success": True, "old_status": current, "new_status": new_status,
-                "message": f"Transitioned: {current} → {new_status}"}
-
-    except Exception as e:
-        return {"success": False, "old_status": "", "new_status": new_status,
-                "message": str(e)}
-    finally:
-        db.close()
-
-
-def get_lifecycle_status(change_id: str) -> dict:
-    """Get full lifecycle info for a change."""
-    _ensure_schema()
-    db = get_db()
-    try:
-        row = db.execute(
-            "SELECT * FROM evolution_changes WHERE change_id = ?",
-            (change_id,),
-        ).fetchone()
-        if not row:
-            return {"found": False}
-
-        events = db.execute(
-            "SELECT event_type, detail, created_at FROM evolution_events WHERE change_id = ? ORDER BY created_at ASC",
-            (change_id,),
-        ).fetchall()
-
-        return {
-            "found": True,
-            "change_id": change_id,
-            "lifecycle_status": row["lifecycle_status"] or row["status"],
-            "task_type": row["task_type"],
-            "suggestion": row["suggestion"],
-            "target_file": row["target_file"],
-            "applied_at": row["applied_at"],
-            "verified_at": row["verified_at"],
-            "verdict": row["verdict"],
-            "history": [dict(e) for e in events],
-        }
-    finally:
-        db.close()
-
-
-# ============ Batch Operations ============
+# ============ Proposal Queries (delegated to proposal_lifecycle_manager) ============
 
 def get_pending_proposals() -> list[dict]:
-    """Get all proposals waiting for approval or execution."""
-    _ensure_schema()
-    db = get_db()
+    """Get all proposals waiting for approval or execution.
+
+    Delegates to proposal_lifecycle_manager (single source of truth).
+    """
     try:
-        rows = db.execute(
-            """SELECT * FROM evolution_changes
-               WHERE lifecycle_status IN ('draft', 'pending', 'approved')
-                  OR (lifecycle_status IS NULL AND status = 'pending')
-               ORDER BY applied_at DESC""",
-        ).fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        db.close()
+        from proposal_lifecycle_manager import list_proposals
+        return list_proposals(status="pending_review")
+    except ImportError:
+        return []
 
 
 def get_stale_changes(hours: int = 48) -> list[dict]:
-    """Find changes stuck in executing/applied without verification."""
-    _ensure_schema()
-    db = get_db()
-    try:
-        rows = db.execute(
-            """SELECT * FROM evolution_changes
-               WHERE (lifecycle_status IN ('executing', 'applied')
-                  OR (lifecycle_status IS NULL AND status = 'applied'))
-                 AND applied_at < datetime('now', ?)
-               ORDER BY applied_at ASC""",
-            (f"-{hours} hours",),
-        ).fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        db.close()
+    """Find proposals stuck in experimenting without verification.
 
-
-def archive_old_changes(days: int = 90) -> int:
-    """Archive verified/rolled_back changes older than N days."""
-    _ensure_schema()
-    db = get_db()
+    Delegates to proposal_lifecycle_manager.
+    """
     try:
-        cursor = db.execute(
-            """UPDATE evolution_changes
-               SET lifecycle_status = 'archived'
-               WHERE lifecycle_status IN ('verified', 'rolled_back', 'rejected')
-                 AND applied_at < datetime('now', ?)""",
-            (f"-{days} days",),
-        )
-        count = cursor.rowcount
-        db.commit()
-        if count:
-            log_event("batch_archive", detail={"archived_count": count, "older_than_days": days})
-            print(f"[evolution_runtime] Archived {count} old changes")
-        return count
-    finally:
-        db.close()
+        from proposal_lifecycle_manager import list_proposals
+        return list_proposals(status="experimenting")
+    except ImportError:
+        return []
 
 
 # ============ Heartbeat Entry Point ============
@@ -363,34 +176,36 @@ def heartbeat_check() -> dict:
     _ensure_schema()
     actions = []
 
-    # 1. Check for stale changes
+    # 1. Check for stale proposals
     stale = get_stale_changes(hours=48)
     if stale:
-        actions.append(f"Found {len(stale)} stale changes (>48h without verification)")
+        actions.append(f"Found {len(stale)} stale proposals (stuck in experimenting)")
         for s in stale[:3]:
-            print(f"  ⚠️ Stale: #{s['change_id']} ({s['task_type']}) applied at {s['applied_at']}")
+            title = s.get('title', '?')
+            print(f"  ⚠️ Stale: #{s.get('proposal_id', '?')} — {title[:50]}")
 
-    # 2. Auto-validate pending verifications
+    # 2. Auto-validate pending verifications via causal_validator
     try:
         from causal_validator import validate_all_pending
         results = validate_all_pending()
         if results:
             verdicts = [r["verdict"] for r in results]
             actions.append(f"Validated {len(results)} changes: {', '.join(verdicts)}")
-            # Transition verified changes
-            for r in results:
-                if r["verdict"] in ("effective", "ineffective", "uncertain"):
-                    transition(r["change_id"], "verified",
-                              f"Auto-validated: {r['verdict']}")
+            # Transition via proposal_lifecycle_manager (canonical entry)
+            try:
+                from proposal_lifecycle_manager import transition
+                for r in results:
+                    if r["verdict"] in ("effective", "ineffective", "uncertain"):
+                        target_status = "validated" if r["verdict"] == "effective" else "failed"
+                        transition(r["change_id"], target_status,
+                                  actor="evolution_runtime",
+                                  reason=f"Auto-validated: {r['verdict']}")
+            except ImportError:
+                actions.append("proposal_lifecycle_manager unavailable for transition")
     except Exception as e:
         actions.append(f"Validation error: {e}")
 
-    # 3. Archive old changes
-    archived = archive_old_changes(days=90)
-    if archived:
-        actions.append(f"Archived {archived} old changes")
-
-    # 4. Scan for new proposals from external learning
+    # 3. Scan for new proposals from external learning
     try:
         from proposal_bridge import scan_pending_observations
         scan_result = scan_pending_observations()
@@ -437,21 +252,11 @@ def _cli():
     p_summary = sub.add_parser("summary", help="Event summary")
     p_summary.add_argument("--days", type=int, default=30)
 
-    # status
-    p_status = sub.add_parser("status", help="Lifecycle status of a change")
-    p_status.add_argument("change_id")
-
-    # transition
-    p_trans = sub.add_parser("transition", help="Transition a change status")
-    p_trans.add_argument("change_id")
-    p_trans.add_argument("new_status")
-    p_trans.add_argument("--detail", default="")
-
     # pending
     sub.add_parser("pending", help="List pending proposals")
 
     # stale
-    p_stale = sub.add_parser("stale", help="Find stale changes")
+    p_stale = sub.add_parser("stale", help="Find stale proposals")
     p_stale.add_argument("--hours", type=int, default=48)
 
     args = parser.parse_args()
@@ -471,38 +276,24 @@ def _cli():
         for t, c in s["by_type"].items():
             print(f"  {t}: {c}")
 
-    elif args.command == "status":
-        info = get_lifecycle_status(args.change_id)
-        if not info["found"]:
-            print(f"Change {args.change_id} not found")
-        else:
-            print(f"Change: {info['change_id']}")
-            print(f"Status: {info['lifecycle_status']}")
-            print(f"Type:   {info['task_type']}")
-            print(f"File:   {info['target_file']}")
-            if info["history"]:
-                print(f"\nHistory:")
-                for h in info["history"]:
-                    print(f"  [{h['created_at']}] {h['event_type']}: {h.get('detail', '')[:60]}")
-
-    elif args.command == "transition":
-        result = transition(args.change_id, args.new_status, args.detail)
-        icon = "✅" if result["success"] else "❌"
-        print(f"{icon} {result['message']}")
-
     elif args.command == "pending":
         proposals = get_pending_proposals()
         if not proposals:
             print("No pending proposals")
         for p in proposals:
-            print(f"  [{p.get('lifecycle_status', p['status'])}] #{p['change_id']}: {p['task_type']} — {p['suggestion'][:50]}")
+            status = p.get('status', '?')
+            pid = p.get('proposal_id', '?')
+            title = p.get('title', '?')
+            print(f"  [{status}] #{pid}: {title[:50]}")
 
     elif args.command == "stale":
         stale = get_stale_changes(hours=args.hours)
         if not stale:
-            print(f"No stale changes (>{args.hours}h)")
+            print(f"No stale proposals (>{args.hours}h)")
         for s in stale:
-            print(f"  ⚠️ #{s['change_id']}: {s['task_type']} applied at {s['applied_at']}")
+            pid = s.get('proposal_id', '?')
+            title = s.get('title', '?')
+            print(f"  ⚠️ #{pid}: {title[:50]}")
 
     else:
         parser.print_help()

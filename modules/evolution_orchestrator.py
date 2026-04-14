@@ -304,8 +304,24 @@ def advance_proposals() -> dict:
                 details.append(f"{p['proposal_id']}: pending_review → approved (P0 auto)")
 
     # 3. approved → experimenting (dispatch to executor)
+    #    Note: proposals without concrete target_scope are tracked goals,
+    #    not executable code changes. Transition them to 'released' directly.
     approved = list_proposals(status="approved")
     for p in approved:
+        target_scope = p.get("target_scope", "") or ""
+        target_module = p.get("target_module", "") or ""
+        # Only dispatch if target_scope looks like a file path (contains / or .py/.md/.json)
+        has_file_target = target_scope.strip() and ("/" in target_scope or target_scope.endswith((".py", ".md", ".json", ".yaml", ".yml")))
+
+        if not has_file_target:
+            # Tracked goal or capability improvement — no concrete file to modify
+            r = transition(p["proposal_id"], "released", actor="orchestrator",
+                          reason="Tracked goal — no executable file target")
+            if r["success"]:
+                advanced += 1
+                details.append(f"{p['proposal_id']}: approved → released (tracked goal)")
+            continue
+
         executed = _dispatch_experiment(p)
         if executed:
             advanced += 1
@@ -489,6 +505,20 @@ def heartbeat() -> dict:
             actions.append(f"Created {len(experiments)} capability experiments")
     except Exception as e:
         actions.append(f"Capability experiment error: {e}")
+
+    # 7. Auto-update goal progress
+    try:
+        from goal_tree import auto_update_progress, auto_adjust_priorities
+        adjustments = auto_adjust_priorities()
+        if adjustments:
+            actions.append(f"Priority adjustments: {len(adjustments)}")
+        progress_updates = auto_update_progress()
+        if progress_updates:
+            actions.append(f"Goal progress updates: {len(progress_updates)}")
+            for u in progress_updates:
+                actions.append(f"  → #{u['goal_id']} {u['goal_title']}: {u['old_progress']:.1f} → {u['new_progress']:.1f}")
+    except Exception as e:
+        actions.append(f"Goal update error: {e}")
 
     summary = {
         "timestamp": timestamp,

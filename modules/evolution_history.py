@@ -39,40 +39,17 @@ def get_event_stats() -> dict:
     """Get event statistics from evolution_runtime.
     
     Delegates to evolution_runtime for unified event tracking.
-    Falls back to evolution_changes table if runtime unavailable.
     """
     try:
         from evolution_runtime import get_event_summary
         summary = get_event_summary(days=30)
         return {
             "total_events": summary["total"],
-            "unprocessed": 0,  # runtime tracks all as processed
+            "unprocessed": 0,
             "by_type": summary["by_type"],
         }
     except ImportError:
-        pass
-
-    # Fallback: derive from evolution_changes
-    db = get_db()
-    try:
-        total = db.execute("SELECT COUNT(*) FROM evolution_changes").fetchone()[0]
-        unprocessed = db.execute(
-            "SELECT COUNT(*) FROM evolution_changes WHERE status = 'pending'"
-        ).fetchone()[0]
-        by_type = {}
-        for r in db.execute(
-            "SELECT task_type, COUNT(*) as c FROM evolution_changes GROUP BY task_type ORDER BY c DESC"
-        ).fetchall():
-            by_type[r["task_type"]] = r["c"]
-        return {
-            "total_events": total,
-            "unprocessed": unprocessed,
-            "by_type": by_type,
-        }
-    except Exception:
         return {"total_events": 0, "unprocessed": 0, "by_type": {}}
-    finally:
-        db.close()
 
 WORKSPACE = Path(__file__).parent.parent
 

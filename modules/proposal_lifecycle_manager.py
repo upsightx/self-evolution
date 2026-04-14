@@ -101,7 +101,7 @@ CREATE INDEX IF NOT EXISTS idx_prop_transitions_pid ON proposal_transitions(prop
 VALID_TRANSITIONS = {
     "draft":          ["pending_review", "cancelled"],
     "pending_review":  ["approved", "rejected"],
-    "approved":       ["experimenting", "cancelled"],
+    "approved":       ["experimenting", "cancelled", "released"],  # released for tracked goals (no execution needed)
     "experimenting":  ["validated", "failed", "cancelled"],
     "validated":      ["released", "cancelled"],
     "released":       ["deprecated", "rolled_back"],

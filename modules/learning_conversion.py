@@ -53,12 +53,10 @@ def get_learning_items(days: int = 30) -> list[dict]:
 
 
 def _get_evolution_changes(days: int = 30) -> list[dict]:
-    """获取最近 N 天的进化变更记录。优先读 proposals，fallback 读 legacy evolution_changes（只读）。"""
+    """获取最近 N 天的进化变更记录。只读 proposals 表（唯一数据源）。"""
     db = get_db()
     cutoff = (datetime.now() - timedelta(days=days)).isoformat()
-    results = []
 
-    # Primary: proposals table
     try:
         rows = db.execute(
             """SELECT proposal_id as change_id, category as task_type,
@@ -68,27 +66,11 @@ def _get_evolution_changes(days: int = 30) -> list[dict]:
                ORDER BY created_at DESC""",
             (cutoff,)
         ).fetchall()
-        results.extend(dict(r) for r in rows)
+        return [dict(r) for r in rows]
     except Exception:
-        pass
-
-    # Legacy fallback: evolution_changes (read-only)
-    try:
-        rows = db.execute(
-            """SELECT change_id, task_type, suggestion, change_description, verdict, applied_at
-               FROM evolution_changes WHERE applied_at >= ?
-               ORDER BY applied_at DESC""",
-            (cutoff,)
-        ).fetchall()
-        existing_ids = {r["change_id"] for r in results}
-        for r in rows:
-            if r["change_id"] not in existing_ids:
-                results.append(dict(r))
-    except Exception:
-        pass
-
-    db.close()
-    return results
+        return []
+    finally:
+        db.close()
 
 
 def _match_learning_to_changes(learning_item: dict, changes: list[dict]) -> list[dict]:
