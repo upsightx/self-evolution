@@ -2,145 +2,165 @@
 
 ## 是什么
 
-`self-evolution` 是一套主动能力进化系统，用来把“发现缺口、创建提案、执行实验、验证效果、固化能力”串成闭环。
+`self-evolution` 是一套主动能力进化系统，把"发现缺口 → 创建提案 → 执行实验 → 验证效果 → 固化能力"串成自主运行的闭环。
 
-它不是简单的自动修 bug 脚本，而是一条持续运行的进化主链：
-- 从信号里发现问题
-- 把问题路由成 proposal
-- 用统一状态机推进 proposal
-- 在执行后做归因验证
-- 把结果写回统一记忆层
-
-## 这次收口后的核心原则
-
-- `proposal_lifecycle_manager.py` 是 proposal 状态的唯一真源
-- proposal 相关表只有一个 writer
-- `evolution_changes` 只保留为 legacy 只读兼容面
-- 统一通过 `X-Memory` 提供的记忆底座落数据
+它在 X-Memory 记忆底座之上，构建了一条持续运行的进化主链：
+- 从任务结果和能力检测中发现问题
+- 把问题路由成结构化 proposal
+- 用统一状态机推进 proposal 生命周期
+- 在 auto_evolve 中执行变更（含保护、备份、回滚）
+- 用 causal_validator 做归因验证
+- 把结果写回 X-Memory，更新 goal_tree 进度
 
 ## 核心链路
 
 ```text
-外部信号 / 任务结果 / 能力缺口
+task_outcomes / 能力检测 / 外部学习
         ↓
-proposal_bridge / capability_detector
+evolution_orchestrator（统一编排入口）
         ↓
-evolution_orchestrator
+proposal_bridge（外部学习桥接）
         ↓
-proposal_lifecycle_manager
+proposal_lifecycle_manager（状态机唯一真源）
         ↓
-evolution_executor
+auto_evolve（自动进化主循环）
         ↓
-causal_validator
+evolution_executor（执行变更，备份+回滚+py_compile校验）
         ↓
-memory_governor / X-Memory
+causal_validator（归因验证）
+        ↓
+goal_tree（目标进度更新）
+        ↓
+X-Memory（持久化记忆）
 ```
 
-## 主要模块
+## 模块总览
 
 ### 编排与状态
-
-| 模块 | 职责 |
+| 文件 | 职责 |
 |------|------|
-| `evolution_orchestrator.py` | 统一编排入口：收信号、去重、路由、推进 |
-| `proposal_lifecycle_manager.py` | proposal 状态唯一真源 |
-| `evolution_runtime.py` | 统一事件日志与运行时入口 |
-| `auto_evolve.py` | 自动进化主循环 |
+| `evolution_orchestrator.py` | **唯一大入口**：信号路由、外部学习桥接、提案推进、目标更新、日志清理 |
+| `proposal_lifecycle_manager.py` | proposal 状态唯一真源，14 种状态转换，全事件日志 |
+| `auto_evolve.py` | 自动进化主循环：能力扫描 → 缺口检测 → 提案创建 → 执行 → 验证 |
+| `evolution_runtime.py` | 事件日志、CLI 入口，heartbeat_check 重定向到 orchestrator |
+| `agenda_planner.py` | 动态议程调度（参考工具，不直接用于心跳） |
 
 ### 执行与验证
-
-| 模块 | 职责 |
+| 文件 | 职责 |
 |------|------|
-| `evolution_executor.py` | 执行提案、应用变更、做 sandbox 测试 |
-| `causal_validator.py` | 验证变更是否真的有效 |
+| `evolution_executor.py` | 执行提案、应用代码变更、Docker sandbox 测试、备份+回滚 |
+| `causal_validator.py` | 变更前后成功率对比，输出 effective/ineffective/uncertain 结论 |
+| `evidence_validator.py` | 结构/能力双 track 分流，即时证据审查 |
+| `evolution_benchmarks.py` | 进化性能基准测试 |
 | `llm_provider.py` | 统一模型调用与 fallback |
 
 ### 采集与治理
-
-| 模块 | 职责 |
+| 文件 | 职责 |
 |------|------|
-| `capability_detector.py` | 主动发现能力缺口 |
-| `task_outcome_hook.py` | 记录任务结果 |
-| `memory_governor.py` | 去重、lineage、反自激 |
-| `proposal_bridge.py` | external-learning 到 self-evolution 的桥接 |
+| `capability_detector.py` | 主动探测能力缺口（missing / struggling / reliable / strengths） |
+| `capability_model.py` | 能力自画像，从 task_outcomes 自动评分 |
+| `task_outcome_hook.py` | 任务结果记录 + 自动系统活动记录 |
+| `memory_governor.py` | 去重、lineage 溯源、反自激保护 |
+| `proposal_bridge.py` | 外部学习 → 自进化的桥接层 |
 
-### 辅助模块
-
-| 模块 | 职责 |
+### 路由与清理
+| 文件 | 职责 |
 |------|------|
-| `goal_tree.py` | 目标树管理 |
-| `capability_model.py` | 能力画像 |
-| `critic_engine.py` | 质量审查 |
-| `learning_conversion.py` | 学习转化率追踪 |
-| `agenda_planner.py` | 动态议程调度 |
+| `controlled_loop_router.py` | 只读路由建议，不修改状态 |
+| `proposal_fusion.py` | 相似提案融合建议 |
+| `proposal_janitor.py` | 垃圾提案清理（测试残留、重复草案） |
+| `proposal_triage.py` | 提案分流（keep / delete / fuse） |
+| `proposal_governance.py` | 治理动作兼容层 |
+
+### 目标与学习
+| 文件 | 职责 |
+|------|------|
+| `goal_tree.py` | 目标树管理，自动进度更新，4 目标追踪 |
+| `learning_conversion.py` | 外部学习转化率追踪 |
+| `critic_engine.py` | 外部学习提案可行性审查 |
+| `skillify.py` | 重复任务模式挖掘 → 自动生成 Skill 草稿 |
+
+### 基础设施
+| 文件 | 职责 |
+|------|------|
+| `bootstrap.py` | 统一 sys.path 管理 |
+| `db_common.py` | 数据库 thin adapter（代理 X-Memory/db_common.py） |
+| `memory_db.py` | 记忆层 thin adapter（代理 X-Memory/memory_db.py） |
+| `evolution_history.py` | 进化历史报告生成 |
+| `arch_audit.py` | 架构合规审计 |
 
 ## 快速开始
 
-### 1. 记录任务结果
-
 ```bash
-python3 self-evolution/modules/task_outcome_hook.py record coding opus 1 --desc "完成代码修复"
-```
+# 记录任务结果
+python3 modules/task_outcome_hook.py record coding opus 1 --desc "完成代码修复"
 
-### 2. 检测能力缺口
+# 运行编排器心跳（全链路一次跑通）
+cd self-evolution
+PYTHONPATH=".:modules:../X-Memory" python3 modules/evolution_orchestrator.py heartbeat
 
-```bash
-python3 self-evolution/modules/capability_detector.py detect
-```
+# 推进 proposal
+python3 modules/proposal_lifecycle_manager.py list --status draft
+python3 modules/proposal_lifecycle_manager.py transition <proposal_id> pending_review
 
-### 3. 推进 proposal 状态机
-
-```bash
-python3 self-evolution/modules/proposal_lifecycle_manager.py list --status draft
-python3 self-evolution/modules/proposal_lifecycle_manager.py transition <proposal_id> pending_review
-```
-
-### 4. 运行编排器心跳
-
-```bash
-python3 self-evolution/modules/evolution_orchestrator.py heartbeat
+# 自动进化（周日用，auto_execute=True, max_changes=1）
+python3 -c "
+import sys; sys.path.insert(0,'modules')
+from auto_evolve import evolve
+evolve(min_pattern_count=3, auto_execute=True, max_rounds=1, max_changes=1)
+"
 ```
 
 ## 测试
 
 ```bash
-cd /root/.openclaw/workspace/self-evolution
-python3 -m pytest -q \
-  test_proposal_lifecycle.py \
-  test_legacy_readonly_contract.py \
-  test_proposals_single_writer.py \
-  test_legacy_readers_whitelist.py
+cd self-evolution
+python3 ../tests/run_all.py
 ```
 
-当前测试重点：
-- proposal 状态机是否按规则推进
-- proposal 相关表是否仍保持单写入口
-- `evolution_changes` 是否仍为只读兼容层
-- 哪些模块允许读取 legacy 表，是否越界
+46 个测试全绿，覆盖 proposal 生命周期、路由、证据验证、融合、熔断、benchmark。
 
-## 设计说明
+## 安全保护
 
-### 为什么不直接删掉 `evolution_changes`
+| 机制 | 说明 |
+|------|------|
+| `_PROTECTED_FILES` | 8 个关键文件禁止自动修改 |
+| 自动备份 | 修改前备份到 `memory/evolution_backups/` |
+| py_compile 校验 | 修改后立即编译检查，失败自动回滚 |
+| `max_changes=1` | 每次最多改 1 个文件，限制爆炸半径 |
+| 确定性哈希去重 | 同一目标不重复创建提案 |
 
-因为系统里仍有一部分 legacy 读取路径依赖它。现在更稳的做法是：
-- 先切断写路径
-- 再把读路径白名单化
-- 最后视迁移情况再考虑彻底退役
+## 设计原则
 
-### 为什么要强调 proposal 单写入口
+1. **proposal_lifecycle_manager 是唯一状态真源** — 其他模块只能通过它读写 proposal 状态
+2. **evolution_orchestrator 是唯一编排入口** — 信号路由、提案推进、进度更新统一走 heartbeat
+3. **所有路径通过 runtime_config 解析** — 无硬编码，环境变量可覆盖
+4. **X-Memory 是唯一数据底座** — 所有持久化走 X-Memory，不自建独立数据库
 
-如果多个模块都能直接写 `proposals`、`proposal_transitions`、`proposal_evidence`，状态机会很快漂移，最后谁也说不清“哪个状态是真的”。
+## 2026-04-27 大修
 
-所以这次重构最重要的一刀就是：
-- 只有 `proposal_lifecycle_manager.py` 能直接写 proposal 相关表
-- 其他模块只能通过它来改状态
+### 闭环打通
+- auto_evolve 提案去重（确定性哈希替代随机 UUID）
+- goal_tree 目标进度从真实数据推算（4 目标全部有值：85/90/50/90）
+- 外部学习桥接：orchestrator 自动读 gather.py JSONL → X-Memory → 提案
+- capability_model 维度从 2 扩展到 4（coding/research/deploy/file_ops）
+- evolution_runtime.heartbeat_check() 重定向到 orchestrator
 
-## 当前状态
+### 安全加固
+- auto_evolve 新增 `_PROTECTED_FILES`（8 个关键文件拦截）
+- 执行后 py_compile 校验 + 失败自动回滚
+- critic_engine.py 从备份恢复（曾被 auto_evolve 损坏）
 
-这版已经完成：
-- proposal 状态真源收口
-- proposal 单写入口护栏化
-- legacy 只读边界测试化
-- 与 `X-Memory` 的统一底座关系更清晰
+### 数据管道
+- task_outcome_hook.auto_record_system_activity() 心跳自动记录
+- proposal_bridge 深读筛选：≥8 分才进提案
+- orchestrator 心跳新增日志清理（/tmp 7 天 + 备份 14 天）
+- 系统 cron 部署（每日 08:30 gather + 08:35 heartbeat + 周日 02:30 auto_evolve）
 
-剩下保留的是可控兼容层，不是主链上的结构性问题。
+### 代码清理
+- 删除演化执行器中 58 行 LEGACY 代码
+- 清理 4 个文件中 evolution_changes 过时引用
+- 6 个 external-learning 文件硬编码路径统一走 runtime_config
+- proposal_fusion ID 生成从字符串拼接改为 MD5 哈希
+- learning_conversion 函数重命名消除误导
+- memory_governor BRIDGE_MODULES 更新
