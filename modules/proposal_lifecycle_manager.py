@@ -3,10 +3,10 @@
 Proposal Lifecycle Manager — 提案生命周期管理器。
 
 职责：
-- 提案的唯一状态真源（消灭 status/lifecycle_status 双轨）
+- 提案的唯一状态真源
 - 强制状态转换规则
 - 证据绑定
-- 查询与过滤
+- 查询、过滤与治理入口
 
 状态机：
   draft → pending_review → approved → experimenting → validated → released
@@ -27,22 +27,18 @@ import json
 import re
 import sys
 from datetime import datetime
-from pathlib import Path
 
-_modules = Path(__file__).parent
-_workspace = _modules.parent
-for p in [str(_workspace), str(_modules)]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
+from bootstrap import ensure_workspace_on_path, ensure_xmemory_on_path, module_dir, module_workspace
 
-try:
-    from runtime_config import XMEMORY_PATH
-    if str(XMEMORY_PATH) not in sys.path:
-        sys.path.insert(0, str(XMEMORY_PATH))
-except ImportError:
-    pass
+# Shared bootstrap keeps path resolution consistent across modules.
+_workspace = ensure_workspace_on_path()
+_modules = module_dir()
+ensure_xmemory_on_path()
 
 from db_common import get_db
+from proposal_fusion import find_fusion_candidates
+from proposal_fusion import load_active_proposals as _load_fusion_active_proposals
+from proposal_janitor import cleanup_bad_proposals, delete_proposal
 
 
 # ============ Schema ============
@@ -376,6 +372,25 @@ def get_actionable_proposals() -> list[dict]:
         db.close()
 
 
+# ============ Deletion ============
+
+def delete_proposal(proposal_id: str) -> dict:
+    """Physically delete a proposal and child rows via the lifecycle owner."""
+    _ensure_schema()
+    db = get_db()
+    try:
+        row = db.execute("SELECT proposal_id FROM proposals WHERE proposal_id = ?", (proposal_id,)).fetchone()
+        if not row:
+            return {"success": False, "message": f"Proposal not found: {proposal_id}"}
+        db.execute("DELETE FROM proposal_transitions WHERE proposal_id = ?", (proposal_id,))
+        db.execute("DELETE FROM proposal_evidence WHERE proposal_id = ?", (proposal_id,))
+        db.execute("DELETE FROM proposals WHERE proposal_id = ?", (proposal_id,))
+        db.commit()
+        return {"success": True, "message": f"Deleted proposal {proposal_id}"}
+    finally:
+        db.close()
+
+
 # ============ Evidence ============
 
 def attach_evidence(
@@ -429,12 +444,77 @@ def get_stats() -> dict:
         db.close()
 
 
+def _compute_governance_actions(limit: int = 100) -> dict:
+    """Compute delete/keep/fuse actions from the canonical lifecycle surface."""
+    active = _load_fusion_active_proposals(limit=limit)
+    janitor = cleanup_bad_proposals(dry_run=True, limit=limit)
+    fusions = find_fusion_candidates(active)
+
+    delete_ids = {d["proposal_id"] for d in janitor["decisions"] if d["action"] == "delete"}
+    covered_by_existing_fusion = set()
+    existing_fusions = [p for p in active if (p.get("proposal_id", "") or "").startswith("fusion-")]
+    active_ids = {p.get("proposal_id") for p in active}
+    for fusion in existing_fusions:
+        for item in (fusion.get("evidence") or []):
+            e_type = item.get("evidence_type") or item.get("type")
+            if e_type != "fusion_sources":
+                continue
+            ref = item.get("evidence_ref") or item.get("ref") or ""
+            covered_by_existing_fusion.update(x for x in ref.split(",") if x and x in active_ids)
+
+    fusion_sources = {pid for c in fusions for pid in c.get("source_ids", [])}
+    delete_ids.update(covered_by_existing_fusion)
+
+    keep = []
+    for proposal in active:
+        proposal_id = proposal.get("proposal_id")
+        if proposal_id in delete_ids or proposal_id in fusion_sources:
+            continue
+        keep.append(proposal_id)
+
+    return {
+        "delete": sorted(delete_ids),
+        "keep": keep,
+        "fuse": fusions,
+        "active_total": len(active),
+    }
+
+
+def get_governance_actions(limit: int = 100) -> dict:
+    """Return delete/keep/fuse proposal governance actions from the canonical lifecycle surface."""
+    return _compute_governance_actions(limit=limit)
+
+
+def apply_governance_actions(limit: int = 100) -> dict:
+    """Apply low-risk proposal governance actions from the canonical lifecycle surface."""
+    actions = _compute_governance_actions(limit=limit)
+    _log_event("proposal_triaged", "proposal_governance", actions)
+
+    deleted = []
+    failed = []
+    for proposal_id in actions.get("delete", []):
+        result = delete_proposal(proposal_id)
+        if result.get("success"):
+            deleted.append(proposal_id)
+            _log_event("proposal_deleted", proposal_id, {"reason": "governance_delete"})
+        else:
+            failed.append({"proposal_id": proposal_id, "message": result.get("message", "")})
+
+    return {
+        "deleted": deleted,
+        "failed": failed,
+        "kept": actions.get("keep", []),
+        "fuse_candidates": actions.get("fuse", []),
+        "active_total": actions.get("active_total", 0),
+    }
+
+
 # ============ Migration: import from legacy evolution_changes ============
 
 def migrate_from_evolution_changes() -> dict:
     """One-time migration: import proposals from legacy evolution_changes table.
 
-    Maps old status to new status:
+    Maps legacy evolution_changes.status to new status:
       pending → pending_review
       applied → experimenting
       verified + effective → released
@@ -459,9 +539,9 @@ def migrate_from_evolution_changes() -> dict:
                 skipped += 1
                 continue
 
-            # Map status
-            old_status = r.get("lifecycle_status") or r.get("status") or "applied"
-            verdict = r.get("verdict")
+            # evolution_changes.status is the only legacy source we still read.
+            old_status = r["status"] if "status" in r.keys() and r["status"] else "applied"
+            verdict = r["verdict"] if "verdict" in r.keys() else None
             if old_status == "pending":
                 new_status = "pending_review"
             elif old_status == "applied":
@@ -541,6 +621,11 @@ def _cli():
     # stats
     sub.add_parser("stats", help="Proposal statistics")
 
+    # governance
+    p_gov = sub.add_parser("governance", help="Show or apply proposal governance actions")
+    p_gov.add_argument("--apply", action="store_true")
+    p_gov.add_argument("--limit", type=int, default=100)
+
     # actionable
     sub.add_parser("actionable", help="List actionable proposals")
 
@@ -579,6 +664,10 @@ def _cli():
         print(f"Total: {s['total']}")
         for status, count in s["by_status"].items():
             print(f"  {status}: {count}")
+
+    elif args.command == "governance":
+        r = apply_governance_actions(limit=args.limit) if args.apply else get_governance_actions(limit=args.limit)
+        print(json.dumps(r, indent=2, ensure_ascii=False, default=str))
 
     elif args.command == "actionable":
         for p in get_actionable_proposals():

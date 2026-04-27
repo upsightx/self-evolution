@@ -14,36 +14,44 @@ import json
 from pathlib import Path
 from datetime import datetime
 
-_modules_path = Path(__file__).parent
-if str(_modules_path) not in sys.path:
-    sys.path.insert(0, str(_modules_path))
+from bootstrap import ensure_workspace_on_path, ensure_xmemory_on_path, module_dir
 
-WORKSPACE = Path(__file__).parent.parent
+_modules_path = module_dir()
+WORKSPACE = ensure_workspace_on_path()
 
 
 def _ensure_xmemory_path():
-    """Ensure X-Memory modules are importable via runtime_config."""
-    try:
-        if str(WORKSPACE) not in sys.path:
-            sys.path.insert(0, str(WORKSPACE))
-        from runtime_config import XMEMORY_PATH
-        if str(XMEMORY_PATH) not in sys.path:
-            sys.path.insert(0, str(XMEMORY_PATH))
-    except ImportError:
-        # Fallback
-        xm = WORKSPACE / "X\u8bb0\u5fc6"
-        if xm.exists() and str(xm) not in sys.path:
-            sys.path.insert(0, str(xm))
+    """Ensure X-Memory modules are importable via shared bootstrap."""
+    ensure_xmemory_on_path()
+
+
+# Files that must NEVER be auto-modified by auto_evolve
+_PROTECTED_FILES = {
+    "self-evolution/modules/critic_engine.py",  # Corrupted by auto_execute; manual restore only
+    "runtime_config.py",                           # Config source of truth
+    "self-evolution/modules/db_common.py",          # DB adapter contract
+    "X-Memory/db_common.py",                        # DB canonical owner
+    "X-Memory/memory_db.py",                        # Schema owner
+    "self-evolution/modules/memory_db.py",           # Thin adapter
+    "self-evolution/modules/bootstrap.py",           # Path resolution
+    "self-evolution/modules/proposal_lifecycle_manager.py",  # State machine owner
+}
+
+
+def _is_protected(target_file: str) -> bool:
+    """Check if a target file is in the protected list."""
+    normalized = str(target_file).replace("\\", "/")
+    return any(normalized.endswith(pf.replace("\\", "/")) or normalized == pf for pf in _PROTECTED_FILES)
 
 
 # Task type → likely target file mapping
 _TASK_TARGET_MAP = {
-    "coding": "modules/critic_engine.py",
-    "research": "modules/learning_conversion.py",
-    "exploration": "modules/skillify.py",
-    "deploy": "modules/evolution_executor.py",
-    "external_learning": "modules/learning_conversion.py",
-    "capability_building": "modules/capability_detector.py",
+    "coding": "self-evolution/modules/task_outcome_hook.py",
+    "research": "self-evolution/modules/learning_conversion.py",
+    "exploration": "self-evolution/modules/skillify.py",
+    "deploy": "self-evolution/modules/evolution_executor.py",
+    "external_learning": "self-evolution/modules/learning_conversion.py",
+    "capability_building": "self-evolution/modules/capability_detector.py",
 }
 
 
@@ -60,22 +68,22 @@ def _resolve_target_file(task_type: str, pattern: str) -> str:
     # Pattern-based heuristics
     pattern_lower = pattern.lower() if pattern else ""
     if any(kw in pattern_lower for kw in ["template", "prompt", "instruction"]):
-        return "modules/critic_engine.py"
+        return "self-evolution/modules/critic_engine.py"
     if any(kw in pattern_lower for kw in ["memory", "recall", "search"]):
-        return "modules/memory_governor.py"
+        return "self-evolution/modules/memory_governor.py"
     if any(kw in pattern_lower for kw in ["goal", "capability", "skill", "detect"]):
-        return "modules/capability_detector.py"
+        return "self-evolution/modules/capability_detector.py"
     if any(kw in pattern_lower for kw in ["signal", "route", "orchestrat"]):
-        return "modules/evolution_orchestrator.py"
+        return "self-evolution/modules/evolution_orchestrator.py"
     if any(kw in pattern_lower for kw in ["proposal", "lifecycle", "approve"]):
-        return "modules/proposal_lifecycle_manager.py"
+        return "self-evolution/modules/proposal_lifecycle_manager.py"
 
     return ""
 
 
 def evolve(
     min_pattern_count: int = 3,
-    auto_execute: bool = True,
+    auto_execute: bool = False,
     max_changes: int = 3,
     max_rounds: int = 1,
     min_improvement: float = 0.05,
@@ -260,13 +268,18 @@ def _run_single_round(min_pattern_count: int, auto_execute: bool, max_changes: i
     print("\n📋 Step 4: Creating proposals from detected issues...")
     proposal_ids = []
     try:
-        from proposal_lifecycle_manager import create_proposal, transition
-        import uuid
+        from proposal_lifecycle_manager import create_proposal, transition, get_proposal
+        import hashlib
         proposal_count = 0
+        skipped_dupes = 0
 
-        # Convert goal gaps to proposals
+        # Convert goal gaps to proposals (deterministic hash based on goal_id prevents dupes)
         for gap in result.get("goal_gaps", []):
-            pid = f"gap-{uuid.uuid4().hex[:12]}"
+            goal_id = gap.get("goal_id", gap.get("title", "unknown"))
+            pid = "gap_" + hashlib.md5(f"goal_gap_{goal_id}".encode()).hexdigest()[:12]
+            if get_proposal(pid) is not None:
+                skipped_dupes += 1
+                continue
             r = create_proposal(
                 proposal_id=pid,
                 title=gap.get("title", "Goal gap")[:200],
@@ -285,9 +298,13 @@ def _run_single_round(min_pattern_count: int, auto_execute: bool, max_changes: i
                 proposal_ids.append(pid)
                 print(f"  📌 {pid} — {gap.get('title', '?')[:50]}")
 
-        # Convert capability weaknesses to proposals
+        # Convert capability weaknesses to proposals (deterministic hash prevents dupes)
         for w in result.get("capability_weaknesses", []):
-            pid = f"weak-{uuid.uuid4().hex[:12]}"
+            wname = w.get("name", "unknown")
+            pid = "capweak_" + hashlib.md5(f"capweak_{wname}".encode()).hexdigest()[:12]
+            if get_proposal(pid) is not None:
+                skipped_dupes += 1
+                continue
             r = create_proposal(
                 proposal_id=pid,
                 title=f"Improve {w.get('name', 'unknown')} ({w.get('score', 0):.0f}/100)",
@@ -306,9 +323,13 @@ def _run_single_round(min_pattern_count: int, auto_execute: bool, max_changes: i
                 proposal_ids.append(pid)
                 print(f"  📌 {pid} — {w.get('name', '?')}")
 
-        # Convert improvement suggestions to proposals
+        # Convert improvement suggestions to proposals (deterministic hash prevents dupes)
         for sug in result.get("improvement_suggestions", []):
-            pid = f"fix-{uuid.uuid4().hex[:12]}"
+            task_type = sug.get("task_type", "general")
+            pid = "capfix_" + hashlib.md5(f"capfix_{task_type}".encode()).hexdigest()[:12]
+            if get_proposal(pid) is not None:
+                skipped_dupes += 1
+                continue
             r = create_proposal(
                 proposal_id=pid,
                 title=sug.get("title", "Improvement")[:200],
@@ -330,8 +351,9 @@ def _run_single_round(min_pattern_count: int, auto_execute: bool, max_changes: i
                 print(f"  📌 {pid} — {sug.get('title', '?')[:50]}")
 
         result["proposals_created"] = proposal_count
-        result["actions_taken"].append(f"Proposals: {proposal_count} created")
-        print(f"  Total proposals created: {proposal_count}")
+        result["proposals_skipped"] = skipped_dupes
+        result["actions_taken"].append(f"Proposals: {proposal_count} created, {skipped_dupes} skipped (duplicate)")
+        print(f"  Total proposals created: {proposal_count}, skipped (duplicates): {skipped_dupes}")
     except Exception as e:
         print(f"  ⚠️ Proposal creation failed: {e}")
         import traceback; traceback.print_exc()
@@ -379,6 +401,18 @@ def _run_single_round(min_pattern_count: int, auto_execute: bool, max_changes: i
                         })
                         print(f"    📋 Tracked: {pid} — {prop.get('title', '?')[:40]}")
                         continue
+                    
+                    if _is_protected(target):
+                        transition(pid, "failed", actor="auto_evolve",
+                                   reason=f"Protected file: {target}")
+                        result["applied_changes"].append({
+                            "proposal_id": pid,
+                            "success": False,
+                            "change_id": None,
+                            "message": f"Blocked: {target} is in protected files list",
+                        })
+                        print(f"    🛡️ Blocked (protected): {pid} — {target}")
+                        continue
 
                     from evolution_executor import apply_improvement
                     change_result = apply_improvement(
@@ -387,6 +421,23 @@ def _run_single_round(min_pattern_count: int, auto_execute: bool, max_changes: i
                         target_file=target,
                         change_description=prop.get("title", ""),
                     )
+                    
+                    # Post-apply safety: verify file still compiles
+                    if change_result.get("success"):
+                        target_path = WORKSPACE / target
+                        if target_path.suffix == '.py':
+                            import py_compile
+                            try:
+                                py_compile.compile(str(target_path), doraise=True)
+                                change_result["compile_ok"] = True
+                            except py_compile.PyCompileError as e:
+                                change_result["success"] = False
+                                change_result["compile_ok"] = False
+                                change_result["message"] = f"py_compile failed: {e}"
+                                # Auto-rollback
+                                from evolution_executor import rollback
+                                rollback(change_result.get("change_id", ""))
+                                print(f"    🔄 Rolled back: {pid} — compile failed")
                     result["applied_changes"].append({
                         "proposal_id": pid,
                         **change_result,
@@ -427,7 +478,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Auto-evolve self-evolution engine")
     parser.add_argument("--min-patterns", type=int, default=3, help="Min failure patterns")
-    parser.add_argument("--auto-execute", action="store_true", default=True, help="Auto-apply changes (default True)")
+    parser.add_argument("--auto-execute", action="store_true", default=False, help="Auto-apply changes (default False)")
     parser.add_argument("--max-changes", type=int, default=3, help="Max changes per round")
     parser.add_argument("--max-rounds", type=int, default=1, help="Max evolution rounds")
     parser.add_argument("--min-improvement", type=float, default=0.05, help="Min improvement to continue")

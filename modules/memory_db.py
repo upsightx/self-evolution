@@ -13,7 +13,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# Ensure X-Memory is importable
+# ADAPTER EXCEPTION: this file must make X-Memory importable before re-exporting
+# memory_db.py. X-Memory remains the only schema owner.
 _workspace = Path(__file__).resolve().parent.parent
 if str(_workspace) not in sys.path:
     sys.path.insert(0, str(_workspace))
@@ -22,7 +23,7 @@ try:
     from runtime_config import XMEMORY_PATH
     _xm = str(XMEMORY_PATH)
 except ImportError:
-    _xm = str(_workspace / "X\u8bb0\u5fc6")
+    _xm = str(_workspace.parent / "X-Memory")
 
 if _xm not in sys.path:
     sys.path.insert(0, _xm)
@@ -31,7 +32,7 @@ if _xm not in sys.path:
 # This ensures `from memory_db import init_db, add_observation, ...` works
 # identically whether called from X-Memory or self-evolution context.
 
-# We must avoid circular imports: this file IS memory_db in modules/ context,
+# We must avoid circular imports: this file is the self-evolution memory_db adapter,
 # so we import from the actual X-Memory path directly.
 import importlib.util
 

@@ -8,7 +8,7 @@ Evolution Executor — 进化执行器。
 - 支持回滚
 
 工作流程：
-1. 接收改进建议（来自 feedback_loop）
+1. 接收改进建议（来自 auto_evolve / proposal_lifecycle_manager）
 2. 确定目标文件（模块模板、配置文件等）
 3. 用 LLM 生成具体变更
 4. 写入文件（带备份）
@@ -19,50 +19,46 @@ Evolution Executor — 进化执行器。
 - 变更前有备份，支持回滚
 - 变更日志写入 proposals 表（via proposal_lifecycle_manager）
 
-架构收口（2026-04-14）：
-- 所有 proposal 数据写入 proposals 表（via proposal_lifecycle_manager）
-- evolution_changes 表为 LEGACY READ-ONLY，不再写入
 - 所有状态操作委托 proposal_lifecycle_manager
 """
 from __future__ import annotations
 
+import ast
 import json
 import os
+import py_compile
 import sys
 import shutil
 from datetime import datetime
 from pathlib import Path
 
-# Path setup so db_common and runtime_config can be found
-_modules = Path(__file__).parent
-_workspace = _modules.parent
-for p in [str(_workspace), str(_modules)]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
+from bootstrap import ensure_workspace_on_path, ensure_xmemory_on_path, module_dir, module_workspace
 
-try:
-    from runtime_config import XMEMORY_PATH
-    if str(XMEMORY_PATH) not in sys.path:
-        sys.path.insert(0, str(XMEMORY_PATH))
-except ImportError:
-    pass
+_workspace = ensure_workspace_on_path()
+_modules = module_dir()
+ensure_xmemory_on_path()
 
 from db_common import get_db
 
 # Workspace root
-WORKSPACE = Path(__file__).parent.parent
+WORKSPACE = module_workspace()
 
 # Protected files that require manual approval
 PROTECTED_FILES = {
-    "X记忆/memory_db.py",
-    "X记忆/memory_store.py",
-    "X记忆/memory_retrieval.py",
-    "X记忆/memory_service.py",
-    "modules/goal_tree.py",
-    "modules/capability_model.py",
-    "modules/feedback_loop.py",
-    "modules/causal_validator.py",
-    "modules/auto_evolve.py",
+    "X-Memory/memory_db.py",
+    "X-Memory/memory_store.py",
+    "X-Memory/memory_retrieval.py",
+    "X-Memory/memory_service.py",
+    "self-evolution/modules/goal_tree.py",
+    "self-evolution/modules/capability_model.py",
+    "self-evolution/modules/feedback_loop.py",
+    "self-evolution/modules/causal_validator.py",
+    "self-evolution/modules/auto_evolve.py",
+    "self-evolution/modules/critic_engine.py",
+    "self-evolution/modules/evolution_executor.py",
+    "self-evolution/modules/evolution_orchestrator.py",
+    "self-evolution/modules/proposal_lifecycle_manager.py",
+    "HEARTBEAT.md",
     "runtime_config.py",
     ".gitignore",
     "openclaw.json",
@@ -79,6 +75,61 @@ DANGEROUS_PATTERNS = [
     "socket.",
 ]
 
+PLACEHOLDER_PATTERNS = [
+    "TODO: implement",
+    "pass  # placeholder",
+    "pass # placeholder",
+    "your code here",
+    "implementation omitted",
+    "pseudo-code",
+    "pseudocode",
+]
+
+MAX_SIZE_SHRINK_RATIO = 0.40
+MAX_LINE_CHANGE_RATIO = 0.50
+
+
+
+def classify_change_risk(target_file: str, operation: str = "modify") -> str:
+    """Classify change risk for future automation gates.
+
+    This is advisory only: it does not grant execution permission.
+    High-risk changes still require explicit human approval.
+    """
+    normalized = (target_file or "").strip()
+    op = (operation or "modify").lower()
+
+    if op in {"delete", "move", "overwrite"}:
+        return "high"
+
+    if normalized in PROTECTED_FILES:
+        return "high"
+
+    if normalized.startswith("self-evolution/modules/") and normalized.endswith(".py"):
+        return "high"
+
+    if normalized in {"AGENTS.md", "SOUL.md", "HEARTBEAT.md", "runtime_config.py"}:
+        return "high"
+
+    if normalized.startswith("memory/") and normalized.endswith(".md"):
+        return "low"
+
+    if normalized.startswith("memory/learning/") and normalized.endswith(".md"):
+        return "low"
+
+    if normalized.startswith("tmp/") or normalized.startswith("projects/"):
+        return "low"
+
+    if normalized.endswith(("README.md", ".md")):
+        return "medium"
+
+    if normalized.startswith("skills/") or "/skills/" in normalized:
+        return "medium"
+
+    if normalized.startswith("tests/"):
+        return "medium"
+
+    return "medium"
 
 def register_external_learning_proposal(
     proposal_id: str,
@@ -132,7 +183,7 @@ def _generate_patch_with_llm(suggestion: str, target_content: str, task_type: st
     Delegates to llm_provider for unified provider management and fallback.
 
     Args:
-        suggestion: Improvement suggestion from feedback_loop
+        suggestion: Improvement suggestion from auto_evolve / proposal lifecycle
         target_content: Current content of the target file
         task_type: Task type being improved (e.g., 'coding')
 
@@ -151,12 +202,67 @@ def _generate_patch_with_llm(suggestion: str, target_content: str, task_type: st
         return None
 
 
-def _check_safety(target_file: str, new_content: str) -> dict:
+def _validate_workspace_path(target_file: str) -> dict:
+    """Ensure target_file stays inside the workspace."""
+    try:
+        target_path = (WORKSPACE / target_file).resolve()
+        target_path.relative_to(WORKSPACE.resolve())
+        return {"safe": True, "path": target_path, "reason": "Path is inside workspace"}
+    except Exception:
+        return {"safe": False, "path": None, "reason": f"Path escapes workspace: {target_file}"}
+
+
+def _check_diff_sanity(original_content: str, new_content: str) -> dict:
+    """Block truncation, noisy rewrites, and placeholder-only patches."""
+    if not new_content.strip():
+        return {"safe": False, "reason": "New content is empty"}
+
+    original_len = len(original_content)
+    new_len = len(new_content)
+    if original_len and new_len < original_len * MAX_SIZE_SHRINK_RATIO:
+        return {"safe": False, "reason": "New content shrinks file by more than 60%"}
+
+    for pattern in PLACEHOLDER_PATTERNS:
+        if pattern.lower() in new_content.lower():
+            return {"safe": False, "reason": f"Contains placeholder pattern: {pattern}"}
+
+    if "�" in new_content:
+        return {"safe": False, "reason": "Contains Unicode replacement characters"}
+
+    old_lines = original_content.splitlines()
+    new_lines = new_content.splitlines()
+    if old_lines:
+        changed = sum(1 for i, line in enumerate(new_lines[:len(old_lines)]) if old_lines[i] != line)
+        changed += abs(len(new_lines) - len(old_lines))
+        if changed / max(len(old_lines), 1) > MAX_LINE_CHANGE_RATIO:
+            return {"safe": False, "reason": "Line changes exceed 30% of file"}
+
+    return {"safe": True, "reason": "Diff sanity passed"}
+
+
+def _validate_syntax_or_format(target_file: str, new_content: str) -> dict:
+    """Run cheap syntax checks before writing generated content."""
+    if target_file.endswith(".py"):
+        try:
+            ast.parse(new_content)
+        except SyntaxError as e:
+            return {"safe": False, "reason": f"Python syntax error: {e}"}
+    elif target_file.endswith(".json"):
+        try:
+            json.loads(new_content)
+        except json.JSONDecodeError as e:
+            return {"safe": False, "reason": f"JSON syntax error: {e}"}
+
+    return {"safe": True, "reason": "Syntax check passed"}
+
+
+def _check_safety(target_file: str, new_content: str, original_content: str = "") -> dict:
     """Check if the change is safe to apply.
 
     Args:
         target_file: Path to the file being modified
         new_content: New content to write
+        original_content: Existing file content for diff sanity checks
 
     Returns:
         {
@@ -164,6 +270,10 @@ def _check_safety(target_file: str, new_content: str) -> dict:
             "reason": str,
         }
     """
+    path_check = _validate_workspace_path(target_file)
+    if not path_check["safe"]:
+        return path_check
+
     # Check 1: Protected files
     if target_file in PROTECTED_FILES:
         return {
@@ -178,6 +288,15 @@ def _check_safety(target_file: str, new_content: str) -> dict:
                 "safe": False,
                 "reason": f"Contains dangerous operation: '{pattern}'",
             }
+
+    if original_content:
+        diff_check = _check_diff_sanity(original_content, new_content)
+        if not diff_check["safe"]:
+            return diff_check
+
+    syntax_check = _validate_syntax_or_format(target_file, new_content)
+    if not syntax_check["safe"]:
+        return syntax_check
 
     return {"safe": True, "reason": "Passed safety check"}
 
@@ -197,7 +316,7 @@ def apply_improvement(
 
     Args:
         task_type: Task type being improved (e.g., 'coding')
-        suggestion: Improvement suggestion from feedback_loop
+        suggestion: Improvement suggestion from auto_evolve / proposal lifecycle
         target_file: Path to the file to modify (relative to workspace)
         change_description: Human-readable description of the change
         max_iterations: Max refinement iterations (default 3)
@@ -268,7 +387,7 @@ def apply_improvement(
                 break
 
             # Safety check BEFORE writing to disk
-            safety = _check_safety(target_file, new_content)
+            safety = _check_safety(target_file, new_content, current_content)
             if not safety["safe"]:
                 test_results.append({"iteration": iteration, "status": "blocked", "reason": safety["reason"]})
                 print(f"  🛑 Safety check failed: {safety['reason']}")
@@ -286,6 +405,28 @@ def apply_improvement(
 
             # Test in sandbox if test_script provided
             test_passed = True
+            if target_file.endswith(".py"):
+                try:
+                    py_compile.compile(str(target_path), doraise=True)
+                except py_compile.PyCompileError as e:
+                    test_passed = False
+                    test_results.append({
+                        "iteration": iteration,
+                        "status": "failed",
+                        "stderr": str(e)[:200],
+                    })
+                    print(f"  ❌ py_compile failed: {str(e)[:100]}")
+                    refined_suggestion = f"""
+Previous attempt failed Python compilation:
+{str(e)[:500]}
+
+Original suggestion: {suggestion}
+
+Please fix the issue and regenerate the patch.
+"""
+                    current_content = new_content
+                    continue
+
             if test_script:
                 print(f"  Testing in sandbox...")
                 sandbox_result = run_in_sandbox(test_script)

@@ -4,7 +4,7 @@ Task Outcome Hook — 任务结果自动记录。
 
 职责：
 - 提供轻量 API，在每次任务完成后记录结果
-- 自动写入 task_outcomes 表（供 feedback_loop、capability_model、causal_validator 消费）
+- 自动写入 task_outcomes 表（供 capability_model、causal_validator、capability_detector 消费）
 - 同时写入 observations 表（供记忆检索）
 - 支持从 OpenClaw 主 agent 的工作流中调用
 
@@ -25,18 +25,11 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-_modules = Path(__file__).parent
-_workspace = _modules.parent
-for p in [str(_workspace), str(_modules)]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
+from bootstrap import ensure_workspace_on_path, ensure_xmemory_on_path, module_dir, module_workspace
 
-try:
-    from runtime_config import XMEMORY_PATH
-    if str(XMEMORY_PATH) not in sys.path:
-        sys.path.insert(0, str(XMEMORY_PATH))
-except ImportError:
-    pass
+_workspace = ensure_workspace_on_path()
+_modules = module_dir()
+ensure_xmemory_on_path()
 
 from db_common import get_db
 
@@ -120,6 +113,40 @@ def record(
         "observation_id": obs_id,
         "message": f"Recorded: {task_type}/{model} {'success' if success else 'failure'}",
     }
+
+
+def auto_record_system_activity() -> dict:
+    """Record orchestrator/system activity as task outcomes for validation pipeline."""
+    from db_common import get_db as _get_db
+    db = _get_db()
+    recorded = 0
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        hb_today = db.execute(
+            "SELECT COUNT(*) FROM task_outcomes WHERE created_at >= ?", (today,)
+        ).fetchone()[0]
+        if hb_today == 0:
+            record("deploy", "system", True, "orchestrator heartbeat executed",
+                   notes="auto-recorded", tags="system,heartbeat", write_observation=False)
+            recorded += 1
+        el_today = db.execute(
+            "SELECT COUNT(*) FROM observations WHERE type='external_learning_evidence' AND created_at >= ?",
+            (today,)
+        ).fetchone()[0]
+        if el_today > 0:
+            el_outcomes = db.execute(
+                "SELECT COUNT(*) FROM task_outcomes WHERE task_type='external_learning' AND created_at >= ?",
+                (today,)
+            ).fetchone()[0]
+            if el_outcomes == 0:
+                record("external_learning", "system", True, f"Recorded {el_today} evidence items",
+                       notes="auto-recorded", tags="system,external_learning", write_observation=True)
+                recorded += 1
+    except Exception as e:
+        print(f"[task_outcome_hook] auto_record: {e}")
+    finally:
+        db.close()
+    return {"recorded": recorded}
 
 
 def record_success(

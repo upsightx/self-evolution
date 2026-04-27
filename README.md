@@ -79,26 +79,26 @@ memory_governor / X-Memory
 ### 1. 记录任务结果
 
 ```bash
-python3 modules/task_outcome_hook.py record coding opus 1 --desc "完成代码修复"
+python3 self-evolution/modules/task_outcome_hook.py record coding opus 1 --desc "完成代码修复"
 ```
 
 ### 2. 检测能力缺口
 
 ```bash
-python3 modules/capability_detector.py detect
+python3 self-evolution/modules/capability_detector.py detect
 ```
 
 ### 3. 推进 proposal 状态机
 
 ```bash
-python3 modules/proposal_lifecycle_manager.py list --status draft
-python3 modules/proposal_lifecycle_manager.py transition <proposal_id> pending_review
+python3 self-evolution/modules/proposal_lifecycle_manager.py list --status draft
+python3 self-evolution/modules/proposal_lifecycle_manager.py transition <proposal_id> pending_review
 ```
 
 ### 4. 运行编排器心跳
 
 ```bash
-python3 modules/evolution_orchestrator.py heartbeat
+python3 self-evolution/modules/evolution_orchestrator.py heartbeat
 ```
 
 ## 测试

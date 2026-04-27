@@ -24,21 +24,12 @@ import sqlite3
 import sys
 import argparse
 from datetime import datetime
-from pathlib import Path
 
-# Path setup so db_common and runtime_config can be found
-_modules = Path(__file__).parent
-_workspace = _modules.parent
-for p in [str(_workspace), str(_modules)]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
+from bootstrap import ensure_workspace_on_path, ensure_xmemory_on_path, module_dir, module_workspace
 
-try:
-    from runtime_config import XMEMORY_PATH
-    if str(XMEMORY_PATH) not in sys.path:
-        sys.path.insert(0, str(XMEMORY_PATH))
-except ImportError:
-    pass
+_workspace = ensure_workspace_on_path()
+_modules = module_dir()
+ensure_xmemory_on_path()
 
 from db_common import DB_PATH, get_db
 
@@ -903,7 +894,52 @@ def auto_update_progress() -> list[dict]:
                         "reason": "子目标进度聚合",
                     })
         
-        # 2. (removed: evolution_executor)
+        # 2. 从能力评分推算目标进度
+        try:
+            from capability_model import evaluate_all
+            all_caps = evaluate_all()
+            cap_map = {c["name"]: c["score"] for c in all_caps}
+            
+            # 进化闭环 → 取 coding + research 平均分作为进度
+            coding_score = cap_map.get("coding", 0)
+            research_score = cap_map.get("research", 0)
+            avg_score = (coding_score + research_score) / 2 if (coding_score or research_score) else 0
+            
+            for goal in goals:
+                goal_lower = (goal["title"] or "").lower()
+                new_val = None
+                if "进化闭环" in goal_lower or "成功率" in goal_lower:
+                    new_val = avg_score
+                elif "学习落地" in goal_lower:
+                    # 外部学习落地率：从 observations 中统计 evidence 数量
+                    evidence_count = db.execute(
+                        "SELECT COUNT(*) FROM observations WHERE type = 'external_learning_evidence' AND source = 'external_learning'"
+                    ).fetchone()[0]
+                    new_val = min(evidence_count * 5, goal["target_value"] or 30)
+                elif "系统稳定性" in goal_lower:
+                    # 系统稳定性：从 task_outcomes 成功率推算
+                    row = db.execute(
+                        "SELECT COUNT(*) as total, SUM(CASE WHEN success=1 THEN 1 ELSE 0 END) as wins FROM task_outcomes"
+                    ).fetchone()
+                    if row and row["total"] > 0:
+                        new_val = (row["wins"] / row["total"]) * 100
+                
+                if new_val is not None:
+                    old_progress = goal["current_value"] or 0
+                    if abs(new_val - old_progress) > 0.1:
+                        db.execute(
+                            "UPDATE goals SET current_value = ?, updated_at = ? WHERE id = ?",
+                            (round(new_val, 2), datetime.now().isoformat(), goal["id"]),
+                        )
+                        updates.append({
+                            "goal_id": goal["id"],
+                            "goal_title": goal["title"],
+                            "old_progress": old_progress,
+                            "new_progress": round(new_val, 2),
+                            "reason": "能力/数据驱动推算",
+                        })
+        except Exception as e:
+            print(f"[goal_tree_auto] 能力推算进度失败：{e}")
         
         db.commit()
     

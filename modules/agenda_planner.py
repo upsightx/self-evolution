@@ -30,6 +30,8 @@ import argparse
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from bootstrap import module_workspace
+
 # Routine check intervals (hours)
 ROUTINE_INTERVALS = {
     "calendar": 6,
@@ -291,8 +293,7 @@ def _load_heartbeat_state() -> dict:
     1. workspace/memory/heartbeat-state.json (current)
     2. workspace/heartbeat-state.json (legacy)
     """
-    # modules/ is at workspace root
-    workspace_root = Path(__file__).resolve().parent.parent
+    workspace_root = module_workspace()
     candidates = [
         workspace_root / "memory" / "heartbeat-state.json",
         workspace_root / "heartbeat-state.json",

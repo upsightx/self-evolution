@@ -17,22 +17,17 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# Path setup so db_common and runtime_config can be found
-_modules = Path(__file__).parent
-_workspace = _modules.parent
-for p in [str(_workspace), str(_modules)]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
+from bootstrap import ensure_workspace_on_path, ensure_xmemory_on_path, module_dir, module_workspace
 
-try:
-    from runtime_config import XMEMORY_PATH
-    if str(XMEMORY_PATH) not in sys.path:
-        sys.path.insert(0, str(XMEMORY_PATH))
-except ImportError:
-    pass
+_workspace = ensure_workspace_on_path()
+_modules = module_dir()
+ensure_xmemory_on_path()
 
 from db_common import get_db
 from causal_validator import get_verification_report
+from controlled_loop_router import ACTIVE_STATUSES, build_action_panel
+from evidence_validator import evaluate_many
+from proposal_lifecycle_manager import get_governance_actions, list_proposals
 
 
 def get_event_stats() -> dict:
@@ -51,7 +46,38 @@ def get_event_stats() -> dict:
     except ImportError:
         return {"total_events": 0, "unprocessed": 0, "by_type": {}}
 
-WORKSPACE = Path(__file__).parent.parent
+WORKSPACE = module_workspace()
+
+
+def get_validation_action_summary(limit: int = 50) -> dict:
+    """Summarize proposal validation + triage actions across evidence/causal/human tracks."""
+    proposals = []
+    for status in sorted(ACTIVE_STATUSES):
+        proposals.extend(list_proposals(status=status, limit=limit))
+    proposals = proposals[:limit]
+    panel = build_action_panel(proposals, limit=limit)
+    verdicts = evaluate_many(proposals, collect=True, run_tests=False)
+    governance = get_governance_actions(limit=limit)
+    by_verdict: dict[str, int] = {}
+    by_track: dict[str, int] = {}
+    for verdict in verdicts:
+        by_verdict[verdict["verdict"]] = by_verdict.get(verdict["verdict"], 0) + 1
+        by_track[verdict["validation_track"]] = by_track.get(verdict["validation_track"], 0) + 1
+
+    return {
+        "total": len(proposals),
+        "validation_total": len(proposals),
+        "governance_total": governance.get("active_total", 0),
+        "by_action": panel.get("by_action", {}),
+        "by_risk": panel.get("by_risk", {}),
+        "human_required": len(panel.get("human_required", [])),
+        "by_verdict": by_verdict,
+        "by_track": by_track,
+        "triage_delete": governance.get("delete", []),
+        "triage_keep": governance.get("keep", []),
+        "triage_fuse": governance.get("fuse", []),
+        "next_items": panel.get("next_items", [])[:10],
+    }
 
 
 def _get_task_outcome_trend(days: int = 30) -> list[dict]:
@@ -141,11 +167,29 @@ def generate_report(days: int = 30, output_path: str | None = None) -> str:
     vr = get_verification_report()
     lines.append(f"| 状态 | 数量 |")
     lines.append(f"|------|------|")
-    lines.append(f"| ✅ 有效 | {vr['effective']} |")
-    lines.append(f"| ❌ 无效 | {vr['ineffective']} |")
-    lines.append(f"| ❓ 不确定 | {vr['uncertain']} |")
-    lines.append(f"| ⏳ 等待样本 | {vr.get('pending', 0)} |")
-    lines.append(f"| 🟡 待验证 | {vr['total_changes'] - vr['effective'] - vr['ineffective'] - vr['uncertain'] - vr.get('pending', 0)} |")
+    lines.append(f"| ✅ 有效 | {vr.get('effective', 0)} |")
+    lines.append(f"| ❌ 无效 | {vr.get('ineffective', 0)} |")
+    lines.append(f"| ❓ 不确定 | {vr.get('uncertain', 0)} |")
+    lines.append(f"| ⏳ 因果样本等待 | {vr.get('pending', 0)} |")
+    lines.append(f"| 🟡 待验证 | {vr.get('total_changes', 0) - vr.get('effective', 0) - vr.get('ineffective', 0) - vr.get('uncertain', 0) - vr.get('pending', 0)} |")
+    lines.append("")
+
+    vas = get_validation_action_summary()
+    lines.append("### 验证行动面板")
+    lines.append("")
+    if vas.get("error"):
+        lines.append(f"行动面板生成失败: {vas['error']}")
+    else:
+        lines.append(f"- 验证活跃提案: {vas['validation_total']}")
+        lines.append(f"- 治理活跃提案: {vas['governance_total']}")
+        lines.append(f"- 需要人工确认: {vas['human_required']}")
+        lines.append(f"- 验证轨道: {vas['by_track']}")
+        lines.append(f"- 证据结论: {vas['by_verdict']}")
+        lines.append(f"- 下一步动作: {vas['by_action']}")
+        lines.append(f"- 风险分布: {vas['by_risk']}")
+        lines.append(f"- Triage 删除: {vas.get('triage_delete', [])}")
+        lines.append(f"- Triage 保留: {vas.get('triage_keep', [])}")
+        lines.append(f"- Triage 融合: {len(vas.get('triage_fuse', []))}")
     lines.append("")
 
     # Section 3: Event Stats
@@ -187,8 +231,8 @@ def generate_report(days: int = 30, output_path: str | None = None) -> str:
     # Section 5: Recent Changes Detail
     lines.append("## 📋 最近变更详情")
     lines.append("")
-    if vr["changes"]:
-        for c in vr["changes"][:10]:
+    if vr.get("changes"):
+        for c in vr.get("changes", [])[:10]:
             verdict = c.get("verdict", "pending")
             icon = {"effective": "✅", "ineffective": "❌", "uncertain": "❓", "pending": "⏳"}.get(verdict, "🟡")
             lines.append(f"### {icon} #{c['change_id']}")

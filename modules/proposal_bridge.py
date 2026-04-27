@@ -1,279 +1,308 @@
 #!/usr/bin/env python3
 """
-Proposal Bridge — external-learning → self-evolution 桥接模块。
+Proposal Bridge — external-learning evidence → self-evolution candidates.
 
-职责：
-- 读取结构化学习项（来自 gather_v3 或 memory_db observations）
-- 按优先级筛选：P0 直接创建 evolution proposal，P1 写入候选队列，其余 skip
-- 调用 evolution_executor.register_external_learning_proposal() 完成注册
-- P0 级提案自动触发 auto_evolve
+Responsibilities:
+- Treat external-learning output as evidence first, not as proposals.
+- Write curated evidence into X-Memory through memory_governor.
+- Derive actionable proposal candidates only when target module and success metric are clear.
+- Attach related evidence to existing proposals instead of creating duplicates.
 
-这是三插件联动的关键桥接层，将文档中的承诺变为可执行代码。
+Canonical flow: learning item → X-Memory evidence → hypothesis/candidate → proposal_lifecycle_manager.
 """
 from __future__ import annotations
 
 import sys
 import json
-from pathlib import Path
 from datetime import datetime
 
-# Setup paths
-_workspace = Path(__file__).resolve().parent.parent
-_modules = _workspace / "modules"
-for p in [str(_workspace), str(_modules)]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
+from bootstrap import ensure_workspace_on_path, ensure_xmemory_on_path, module_dir, module_workspace
 
-try:
-    from runtime_config import XMEMORY_PATH
-    if str(XMEMORY_PATH) not in sys.path:
-        sys.path.insert(0, str(XMEMORY_PATH))
-except ImportError:
-    _xm = _workspace / "X\u8bb0\u5fc6"
-    if _xm.exists() and str(_xm) not in sys.path:
-        sys.path.insert(0, str(_xm))
+# Shared bootstrap keeps path resolution consistent across modules.
+_workspace = ensure_workspace_on_path()
+_modules = module_dir()
+ensure_xmemory_on_path()
 
 
 def process_learning_items(items: list[dict]) -> dict:
-    """Process structured learning items into evolution proposals.
+    """Ingest learning output as evidence, then derive proposals only when actionable.
 
-    Args:
-        items: List of learning items, each with at least:
-            - id or proposal_id: unique identifier
-            - priority: "P0", "P1", or "P2"/"skip"
-            - summary: short description
-            - target_module (optional): which module to improve
-            - change_description (optional): what to change
-
-    Returns:
-        {
-            "processed": int,
-            "p0_proposals": int,
-            "p1_candidates": int,
-            "skipped": int,
-            "results": list[dict],
-            "auto_evolve_triggered": bool,
-        }
+    Contract:
+    - X-Memory stores external-learning facts/evidence.
+    - proposal_lifecycle_manager stores only actionable proposals.
+    - This bridge never treats one learning item as one proposal by default.
     """
     results = []
-    p0_count = 0
-    p1_count = 0
+    evidence_count = 0
+    proposals_created = 0
+    attached = 0
     skipped = 0
 
     for item in items:
-        priority = item.get("priority", "P2").upper()
-        item_id = item.get("id") or item.get("proposal_id") or f"learn_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        summary = item.get("summary", "")[:200]
+        evidence = _record_evidence(item)
+        results.append(evidence)
+        if not evidence.get("success"):
+            skipped += 1
+            continue
+        evidence_count += 1
 
-        if priority == "P0":
-            result = _register_proposal(item_id, summary, item)
-            results.append(result)
-            if result.get("success"):
-                p0_count += 1
-            else:
-                print(f"  ⚠️ P0 registration failed: {result.get('message')}")
-
-        elif priority == "P1":
-            result = _record_candidate(item_id, summary, item)
-            results.append(result)
-            p1_count += 1
-
-        else:
+        candidate = _derive_proposal_candidate(item, evidence)
+        if not candidate.get("actionable"):
             skipped += 1
             results.append({
-                "id": item_id,
-                "action": "skipped",
-                "priority": priority,
+                "id": evidence["id"],
+                "action": "proposal_skipped",
                 "success": True,
-                "message": f"Priority {priority} — skipped",
+                "message": candidate.get("reason", "No actionable proposal derived"),
             })
+            continue
 
-    # Auto-trigger evolve for P0 proposals
+        proposal = _upsert_proposal_candidate(candidate, evidence)
+        results.append(proposal)
+        if proposal.get("action") == "created_proposal" and proposal.get("success"):
+            proposals_created += 1
+        elif proposal.get("action") == "attached_evidence" and proposal.get("success"):
+            attached += 1
+        else:
+            skipped += 1
+
     auto_triggered = False
-    if p0_count > 0:
+    if proposals_created > 0:
         auto_triggered = _trigger_auto_evolve()
 
     summary = {
         "processed": len(items),
-        "p0_proposals": p0_count,
-        "p1_candidates": p1_count,
+        "evidence_recorded": evidence_count,
+        "proposals_created": proposals_created,
+        "evidence_attached": attached,
         "skipped": skipped,
         "results": results,
-        "auto_evolve_triggered": auto_triggered,
+        "orchestrator_triggered": auto_triggered,
     }
-
-    print(f"[proposal_bridge] Processed {len(items)} items: "
-          f"P0={p0_count}, P1={p1_count}, skip={skipped}, "
-          f"auto_evolve={'yes' if auto_triggered else 'no'}")
-
+    print(f"[proposal_bridge] Processed {len(items)} items: evidence={evidence_count}, "
+          f"proposals={proposals_created}, attached={attached}, skipped={skipped}")
     return summary
 
 
 def process_learning_note(note: dict) -> dict:
-    """Process a single learning note. Convenience wrapper.
-
-    Args:
-        note: Single learning item dict
-
-    Returns:
-        Processing result dict
-    """
+    """Process a single learning item. Convenience wrapper."""
     result = process_learning_items([note])
     return result["results"][0] if result["results"] else {"success": False, "message": "No items"}
 
 
-def _register_proposal(item_id: str, summary: str, item: dict) -> dict:
-    """Register a P0 item as an evolution proposal via proposal_lifecycle_manager."""
-    try:
-        from proposal_lifecycle_manager import create_proposal
-
-        proposal_id = f"ext_{item_id}_{datetime.now().strftime('%Y%m%d')}"
-        result = create_proposal(
-            proposal_id=proposal_id,
-            title=summary[:100],
-            summary=summary,
-            category=item.get("type", "external_learning"),
-            source_type="external_learning",
-            source_ref=item_id,
-            priority=item.get("priority", "P0"),
-            target_module=item.get("target_module", ""),
-            change_description=item.get("change_description", summary),
-            initial_status="draft",
-            evidence=[{
-                "type": "learning_item",
-                "ref": item_id,
-                "description": summary[:200],
-            }],
-        )
-        result["action"] = "registered_proposal"
-        result["priority"] = item.get("priority", "P0")
-        result["id"] = item_id
-        result["proposal_id"] = proposal_id
-        return result
-
-    except Exception as e:
-        return {
-            "id": item_id,
-            "action": "register_failed",
-            "priority": "P0",
-            "success": False,
-            "message": str(e),
-        }
+def _item_id(item: dict) -> str:
+    base = item.get("id") or item.get("proposal_id") or item.get("url") or item.get("title") or datetime.now().isoformat()
+    import hashlib
+    return "learn_" + hashlib.sha1(str(base).encode("utf-8")).hexdigest()[:16]
 
 
-def _record_candidate(item_id: str, summary: str, item: dict) -> dict:
-    """Record a P1 item as a landing candidate via memory_governor."""
+def _summary(item: dict) -> str:
+    return (item.get("reader_summary") or item.get("summary") or item.get("description") or item.get("title") or "")[:1200]
+
+
+def _record_evidence(item: dict) -> dict:
+    """Write final learning item to X-Memory as governed evidence."""
+    item_id = _item_id(item)
+    title = item.get("title") or item.get("summary") or item_id
+    evidence_payload = {
+        "schema": "external_learning_evidence.v1",
+        "id": item_id,
+        "url": item.get("url"),
+        "github_url": item.get("github_url"),
+        "source": item.get("source"),
+        "published": item.get("published"),
+        "screen_score": item.get("screen_score"),
+        "screen_reason": item.get("screen_reason"),
+        "reader_score": item.get("reader_score"),
+        "reader_summary": item.get("reader_summary"),
+        "reader_rationale": item.get("reader_rationale"),
+        "reader_content_source": item.get("reader_content_source") or item.get("content_source"),
+        "reader_content_cache_path": item.get("reader_content_cache_path") or item.get("content_cache_path"),
+        "final_score": item.get("final_score"),
+        "final_decision": item.get("final_decision") or item.get("decision"),
+        "final_rationale": item.get("final_rationale") or item.get("rationale"),
+    }
+    facts = [x for x in [
+        f"final_score={evidence_payload['final_score']}",
+        f"reader_score={evidence_payload['reader_score']}",
+        f"content_source={evidence_payload['reader_content_source']}",
+        f"url={evidence_payload['url']}",
+    ] if not x.endswith("=None")]
+    concepts = _infer_concepts(item)
     try:
         from memory_governor import add_observation as gov_add
-
         result = gov_add(
-            type="discovery",
-            title=f"[P1 Candidate] {summary[:80]}",
-            narrative=json.dumps(item, ensure_ascii=False, default=str),
+            type="external_learning_evidence",
+            title=f"[External Learning Evidence] {title[:100]}",
+            narrative=json.dumps(evidence_payload, ensure_ascii=False, default=str),
+            facts=facts,
+            concepts=concepts,
             source="external_learning",
-            tags="learning,P1,candidate",
+            verified=True,
+            tags=["learning", "evidence"] + concepts[:5],
             task_type="external_learning",
-            origin_module="proposal_bridge",
+            origin_module="external_learning_evidence_bridge",
             origin_ref=item_id,
         )
         return {
             "id": item_id,
-            "action": "recorded_candidate",
-            "priority": "P1",
+            "action": "recorded_evidence" if result.get("action") == "created" else result.get("action", "recorded_evidence"),
             "success": result.get("success", False),
             "observation_id": result.get("observation_id"),
             "message": result.get("message", ""),
+            "evidence_ref": f"observation:{result.get('observation_id')}",
+        }
+    except Exception as e:
+        return {"id": item_id, "action": "record_evidence_failed", "success": False, "message": str(e)}
+
+
+def _infer_concepts(item: dict) -> list[str]:
+    text = " ".join(str(item.get(k, "")) for k in ["title", "description", "reader_summary", "final_rationale", "screen_reason"]).lower()
+    concepts = []
+    rules = [
+        ("agent_rules", ["rule", "guardrail", "negative constraint", "do not", "规则"]),
+        ("benchmark_driven", ["benchmark", "swe-bench", "terminal-bench", "评测"]),
+        ("coding_agent", ["coding agent", "代码代理", "agent"]),
+        ("memory_architecture", ["memory", "记忆"]),
+        ("prompt_governance", ["prompt", "context priming", "提示"]),
+    ]
+    for concept, needles in rules:
+        if any(n in text for n in needles):
+            concepts.append(concept)
+    return concepts or ["external_learning"]
+
+
+def _derive_proposal_candidate(item: dict, evidence: dict) -> dict:
+    """Convert evidence into an actionable proposal candidate only when target and metric are clear."""
+    final_score = float(item.get("final_score") or item.get("score") or 0)
+    reader_score = float(item.get("reader_score") or 0)
+    text = " ".join(str(item.get(k, "")) for k in ["title", "description", "reader_summary", "final_rationale", "screen_reason"])
+    low = text.lower()
+
+    if max(final_score, reader_score) < 8.5:
+        return {"actionable": False, "reason": "Evidence score below proposal threshold"}
+
+    if any(x in low for x in ["rule", "guardrail", "context priming", "do not", "规则", "负向约束"]):
+        return {
+            "actionable": True,
+            "proposal_key": "prompt_guardrail_audit",
+            "title": "Audit agent rule files toward tested guardrails",
+            "summary": "External evidence suggests coding-agent rules work mainly as context priming; negative guardrails outperform broad positive guidance.",
+            "priority": "P1",
+            "target_module": "agent_instructions",
+            "target_scope": "AGENTS.md",
+            "change_description": "Audit AGENTS/SKILL guidance: reduce vague positive advice, preserve tested do-not guardrails, and add regression checks for rule changes.",
+            "hypothesis": "Replacing vague positive guidance with explicit guardrails will improve agent reliability and reduce instruction drift.",
+            "success_metric": "Instruction audit completed with residue scan and at least one regression prompt/check covering guardrail behavior.",
         }
 
-    except Exception as e:
+    if any(x in low for x in ["benchmark", "swe-bench", "terminal-bench", "benchmark-driven", "评测"]):
         return {
-            "id": item_id,
-            "action": "record_failed",
+            "actionable": True,
+            "proposal_key": "benchmark_driven_regression",
+            "title": "Add benchmark-driven regression loop for evolution changes",
+            "summary": "External evidence supports using benchmarks as the target function for agent migration and system evolution.",
             "priority": "P1",
-            "success": False,
-            "message": str(e),
+            "target_module": "self_evolution",
+            "target_scope": "modules",
+            "change_description": "Define a lightweight regression suite for self-evolution/external-learning changes before automatic proposal advancement.",
+            "hypothesis": "Benchmark-driven validation will catch broken bridges, JSON failures, and routing regressions earlier than manual inspection.",
+            "success_metric": "A repeatable regression command covers evidence ingestion, proposal routing, and one real content-fetch path.",
         }
+
+    return {"actionable": False, "reason": "No clear target module and success metric"}
+
+
+def _upsert_proposal_candidate(candidate: dict, evidence: dict) -> dict:
+    """Create one proposal per proposal_key, or attach new evidence to the existing proposal."""
+    proposal_id = f"ext_{candidate['proposal_key']}"
+    evidence_ref = evidence.get("evidence_ref") or evidence.get("id")
+    description = json.dumps({
+        "evidence_id": evidence.get("id"),
+        "observation_id": evidence.get("observation_id"),
+        "hypothesis": candidate.get("hypothesis"),
+        "success_metric": candidate.get("success_metric"),
+    }, ensure_ascii=False)
+    try:
+        from proposal_lifecycle_manager import create_proposal, get_proposal, attach_evidence
+        existing = get_proposal(proposal_id)
+        if existing:
+            attached = attach_evidence(proposal_id, "external_learning_evidence", str(evidence_ref), description)
+            attached.update({"id": evidence.get("id"), "action": "attached_evidence", "proposal_id": proposal_id})
+            return attached
+
+        result = create_proposal(
+            proposal_id=proposal_id,
+            title=candidate["title"],
+            summary=candidate["summary"],
+            category="external_learning_candidate",
+            source_type="external_learning_evidence",
+            source_ref=str(evidence_ref),
+            priority=candidate.get("priority", "P1"),
+            target_scope=candidate.get("target_scope", ""),
+            target_module=candidate.get("target_module", ""),
+            change_description=candidate.get("change_description", ""),
+            initial_status="draft",
+            evidence=[{
+                "type": "external_learning_evidence",
+                "ref": str(evidence_ref),
+                "description": description,
+            }],
+        )
+        result.update({"id": evidence.get("id"), "action": "created_proposal", "proposal_id": proposal_id})
+        return result
+    except Exception as e:
+        return {"id": evidence.get("id"), "action": "proposal_failed", "success": False, "proposal_id": proposal_id, "message": str(e)}
 
 
 def _trigger_auto_evolve() -> bool:
-    """Trigger evolution via orchestrator for P0 proposals.
-    
-    Uses orchestrator.advance_proposals() as the sole entry point.
-    No fallback to legacy auto_evolve.
-    """
+    """Advance proposals via orchestrator as the sole entry point."""
     try:
         from evolution_orchestrator import advance_proposals
-        print("[proposal_bridge] ⚡ P0 detected — advancing via orchestrator...")
+        print("[proposal_bridge] advancing via orchestrator...")
         result = advance_proposals()
         if result["advanced"] > 0:
             print(f"[proposal_bridge] Orchestrator advanced {result['advanced']} proposals")
         return True
     except Exception as e:
-        print(f"[proposal_bridge] ⚠️ orchestrator failed: {e}")
+        print(f"[proposal_bridge] orchestrator failed: {e}")
         return False
 
 
 def scan_pending_observations() -> dict:
-    """Scan memory_db for unprocessed high-score learning observations.
-
-    Finds observations with type='discovery' and source='external_learning'
-    that haven't been converted to proposals yet.
-
-    Returns:
-        process_learning_items result
-    """
+    """Scan external-learning evidence observations and route actionable candidates."""
     try:
         from db_common import get_db
         db = get_db()
-
         rows = db.execute("""
-            SELECT id, title, narrative, tags, created_at
-            FROM observations
-            WHERE type = 'discovery'
-              AND source = 'external_learning'
-              AND source != 'proposal_bridge'
-              AND title NOT LIKE '[P1 Candidate]%'
-              AND title NOT LIKE '[P0%'
-            ORDER BY created_at DESC
+            SELECT o.id, o.title, o.narrative, o.tags, o.created_at
+            FROM observations o
+            LEFT JOIN memory_lineage l ON l.observation_id = o.id
+            WHERE o.type = 'external_learning_evidence'
+              AND o.source = 'external_learning'
+              AND COALESCE(l.is_bridge_output, 0) = 0
+            ORDER BY o.created_at DESC
             LIMIT 20
         """).fetchall()
         db.close()
 
         items = []
         for r in rows:
-            # Try to parse narrative as JSON for structured data
-            meta = {}
             try:
                 meta = json.loads(r["narrative"]) if r["narrative"] else {}
             except (json.JSONDecodeError, TypeError):
-                pass
-
-            priority = "P2"  # Default
-            tags = r["tags"] or ""
-            if "P0" in tags:
-                priority = "P0"
-            elif "P1" in tags:
-                priority = "P1"
-            elif meta.get("priority"):
-                priority = meta["priority"]
-
-            items.append({
-                "id": f"obs_{r['id']}",
-                "priority": priority,
-                "summary": r["title"][:200],
-                "target_module": meta.get("target_module", ""),
-                "change_description": meta.get("change_description", ""),
-            })
+                meta = {}
+            meta.setdefault("id", f"obs_{r['id']}")
+            meta.setdefault("title", r["title"])
+            items.append(meta)
 
         if items:
             return process_learning_items(items)
-        else:
-            print("[proposal_bridge] No pending learning observations found")
-            return {"processed": 0, "p0_proposals": 0, "p1_candidates": 0, "skipped": 0, "results": [], "auto_evolve_triggered": False}
-
+        print("[proposal_bridge] No pending external learning evidence found")
+        return {"processed": 0, "evidence_recorded": 0, "proposals_created": 0, "evidence_attached": 0, "skipped": 0, "results": [], "orchestrator_triggered": False}
     except Exception as e:
         print(f"[proposal_bridge] Scan failed: {e}")
-        return {"processed": 0, "p0_proposals": 0, "p1_candidates": 0, "skipped": 0, "results": [], "auto_evolve_triggered": False}
+        return {"processed": 0, "evidence_recorded": 0, "proposals_created": 0, "evidence_attached": 0, "skipped": 0, "results": [], "orchestrator_triggered": False}
 
 
 # ============ CLI ============

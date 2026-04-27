@@ -19,20 +19,12 @@ import json
 import hashlib
 import sys
 from datetime import datetime, timedelta
-from pathlib import Path
 
-_modules = Path(__file__).parent
-_workspace = _modules.parent
-for p in [str(_workspace), str(_modules)]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
+from bootstrap import ensure_workspace_on_path, ensure_xmemory_on_path, module_dir, module_workspace
 
-try:
-    from runtime_config import XMEMORY_PATH
-    if str(XMEMORY_PATH) not in sys.path:
-        sys.path.insert(0, str(XMEMORY_PATH))
-except ImportError:
-    pass
+_workspace = ensure_workspace_on_path()
+_modules = module_dir()
+ensure_xmemory_on_path()
 
 from db_common import get_db
 
@@ -66,10 +58,11 @@ CREATE INDEX IF NOT EXISTS idx_dedup_hash ON memory_dedup_hashes(content_hash);
 # Modules whose output should NOT be re-ingested by scanners
 BRIDGE_MODULES = {
     "proposal_bridge",
+    "external_learning_evidence_bridge",
     "evolution_orchestrator",
     "evolution_executor",
-    "change_applier",
     "memory_governor",
+    "auto_evolve",  # replaced legacy change_applier
 }
 
 
@@ -106,7 +99,7 @@ def add_observation(
     """Governed observation write with dedup and lineage.
 
     Args:
-        origin_module: Which module is writing this (e.g., 'proposal_bridge', 'feedback_loop')
+        origin_module: Which module is writing this (e.g., 'proposal_bridge', 'evolution_orchestrator')
         origin_ref: Reference ID from the origin (e.g., signal_id, proposal_id)
 
     Returns:

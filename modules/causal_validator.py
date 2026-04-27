@@ -9,7 +9,7 @@ Causal Validator — 归因验证器。
 
 数据源（优先级）：
 1. proposals 表（proposal_lifecycle_manager 管理，唯一真源）
-2. evolution_changes 表（legacy 只读兼容，不写回）
+
 
 归因规则：
 - effective: 变更后成功率提升 ≥ 15%，且样本数 ≥ 5
@@ -80,10 +80,6 @@ def _get_post_success_rate(task_type: str, after_time: str) -> tuple[float, int]
 def _update_goal_progress_for_task_type(task_type: str, improvement: float) -> bool:
     """Update goal progress for goals related to this task_type."""
     try:
-        import sys
-        modules_path = Path(__file__).parent
-        if str(modules_path) not in sys.path:
-            sys.path.insert(0, str(modules_path))
         from goal_tree import list_goals, update_goal
 
         goals = list_goals(status="active")

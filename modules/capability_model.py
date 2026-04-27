@@ -7,7 +7,7 @@ Capability Model — Self-Evolution核心模块之二。
 
 设计原则：
 - 能力 = task_type 维度的成功率 + 质量分
-- 自动从 feedback_loop 的 task_outcomes 表聚合
+- 自动从 task_outcome_hook 的 task_outcomes 表聚合
 - 支持手动注册新能力维度
 - 输出能力缺口给 goal_tree 消费
 - 能力评分 0-100，按最近 N 次任务加权（近期权重更高）
@@ -27,19 +27,11 @@ import argparse
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# Path setup so db_common and runtime_config can be found
-_modules = Path(__file__).parent
-_workspace = _modules.parent
-for p in [str(_workspace), str(_modules)]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
+from bootstrap import ensure_workspace_on_path, ensure_xmemory_on_path, module_dir, module_workspace
 
-try:
-    from runtime_config import XMEMORY_PATH
-    if str(XMEMORY_PATH) not in sys.path:
-        sys.path.insert(0, str(XMEMORY_PATH))
-except ImportError:
-    pass
+_workspace = ensure_workspace_on_path()
+_modules = module_dir()
+ensure_xmemory_on_path()
 
 from db_common import DB_PATH, get_db
 
@@ -74,7 +66,7 @@ def _ensure_table():
 
 # ============ Core: Auto-evaluate from task_outcomes ============
 
-def evaluate_all(days: int = 30, min_samples: int = 3) -> list[dict]:
+def evaluate_all(days: int = 30, min_samples: int = 1) -> list[dict]:
     """Auto-evaluate all capabilities from task_outcomes data.
 
     Scans task_outcomes for distinct task_types, computes weighted

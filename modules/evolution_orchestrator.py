@@ -19,21 +19,15 @@ import json
 import sys
 import hashlib
 from datetime import datetime, timedelta
-from pathlib import Path
 
-_modules = Path(__file__).parent
-_workspace = _modules.parent
-for p in [str(_workspace), str(_modules)]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
+from bootstrap import ensure_workspace_on_path, ensure_xmemory_on_path, module_dir, module_workspace
 
-try:
-    from runtime_config import XMEMORY_PATH
-    if str(XMEMORY_PATH) not in sys.path:
-        sys.path.insert(0, str(XMEMORY_PATH))
-except ImportError:
-    pass
+# Shared bootstrap keeps path resolution consistent across modules.
+_workspace = ensure_workspace_on_path()
+_modules = module_dir()
+ensure_xmemory_on_path()
 
+from runtime_config import WORKSPACE
 from db_common import get_db
 
 
@@ -84,7 +78,7 @@ def ingest_signal(
 
     Signal types:
       - task_failure: repeated task failures
-      - learning_item: from external learning
+      - external_learning_evidence: curated evidence from external learning
       - memory_pattern: from capability_detector analysis
       - capability_gap: from capability_model
       - goal_gap: from goal_tree
@@ -249,7 +243,8 @@ def _create_proposal_from_signal(signal: dict, proposal_id: str, priority: str) 
             source_type="signal",
             source_ref=signal["signal_id"],
             priority=priority,
-            target_module=target,
+            target_scope=target,
+            target_module=signal.get("task_type", "") or "general",
             initial_status="draft",
             evidence=[{
                 "type": "signal",
@@ -264,11 +259,17 @@ def _create_proposal_from_signal(signal: dict, proposal_id: str, priority: str) 
 
 # ============ Proposal Advancement ============
 
+def _has_file_target(target_scope: str) -> bool:
+    """Return True when target_scope looks like an executable file target."""
+    target_scope = (target_scope or "").strip()
+    return bool(target_scope and ("/" in target_scope or target_scope.endswith((".py", ".md", ".json", ".yaml", ".yml"))))
+
+
 def advance_proposals() -> dict:
     """Advance proposals through their lifecycle.
 
     - draft → pending_review (auto-advance if evidence attached)
-    - pending_review → approved (auto-approve P0, P1 needs review)
+    - pending_review → approved (auto-approve P0 only when no file execution is required)
     - experimenting → check experiment results
 
     Returns:
@@ -293,51 +294,50 @@ def advance_proposals() -> dict:
                 advanced += 1
                 details.append(f"{p['proposal_id']}: draft → pending_review")
 
-    # 2. pending_review → approved (auto-approve P0)
+    # 2. pending_review → approved (auto-approve P0 only when no file execution is required)
     pending = list_proposals(status="pending_review")
     for p in pending:
-        if p["priority"] == "P0":
+        target_scope = p.get("target_scope", "") or ""
+        has_file_target = _has_file_target(target_scope)
+        if p["priority"] == "P0" and not has_file_target:
             r = transition(p["proposal_id"], "approved", actor="orchestrator",
-                          reason="P0 auto-approved")
+                          reason="P0 auto-approved for non-executable tracked proposal")
             if r["success"]:
                 advanced += 1
-                details.append(f"{p['proposal_id']}: pending_review → approved (P0 auto)")
+                details.append(f"{p['proposal_id']}: pending_review → approved (P0 non-exec auto)")
+        elif p["priority"] == "P0" and has_file_target:
+            details.append(f"{p['proposal_id']}: pending_review (file target requires manual approval)")
 
-    # 3. approved → experimenting (dispatch to executor)
-    #    Note: proposals without concrete target_scope are tracked goals,
-    #    not executable code changes. Transition them to 'released' directly.
+    # 3. approved proposals wait for explicit execution/release.
+    #    Heartbeat must not dispatch file-target changes automatically.
     approved = list_proposals(status="approved")
     for p in approved:
         target_scope = p.get("target_scope", "") or ""
-        target_module = p.get("target_module", "") or ""
-        # Only dispatch if target_scope looks like a file path (contains / or .py/.md/.json)
-        has_file_target = target_scope.strip() and ("/" in target_scope or target_scope.endswith((".py", ".md", ".json", ".yaml", ".yml")))
+        if _has_file_target(target_scope):
+            details.append(f"{p['proposal_id']}: approved (file target requires explicit execution)")
+        else:
+            details.append(f"{p['proposal_id']}: approved (tracked proposal awaits explicit release)")
 
-        if not has_file_target:
-            # Tracked goal or capability improvement — no concrete file to modify
-            r = transition(p["proposal_id"], "released", actor="orchestrator",
-                          reason="Tracked goal — no executable file target")
-            if r["success"]:
-                advanced += 1
-                details.append(f"{p['proposal_id']}: approved → released (tracked goal)")
-            continue
-
-        executed = _dispatch_experiment(p)
-        if executed:
-            advanced += 1
-            details.append(f"{p['proposal_id']}: approved → experimenting (dispatched)")
-
-    # 4. experimenting → validated/failed (run causal validation)
+    # 4. experimenting → validated/failed (run validation)
+    just_validated = set()
     experimenting = list_proposals(status="experimenting")
     for p in experimenting:
         validated = _run_validation(p)
         if validated:
             advanced += 1
             details.append(f"{p['proposal_id']}: experimenting → {validated}")
+            if validated == "validated":
+                just_validated.add(p["proposal_id"])
 
     # 5. validated → released (auto-release)
     validated_list = list_proposals(status="validated")
     for p in validated_list:
+        # Fresh validator transitions should remain inspectable for one cycle.
+        # advance_proposals still releases proposals that were already validated
+        # before this call.
+        if p["proposal_id"] in just_validated:
+            details.append(f"{p['proposal_id']}: validated (fresh, awaiting next cycle release)")
+            continue
         r = transition(p["proposal_id"], "released", actor="orchestrator",
                       reason="Validated, auto-releasing")
         if r["success"]:
@@ -370,9 +370,9 @@ def _dispatch_experiment(proposal: dict) -> bool:
     # Attempt execution (best-effort; failure leaves proposal in experimenting)
     try:
         from evolution_executor import apply_improvement
-        target = proposal.get("target_module", "")
+        target = proposal.get("target_scope", "") or proposal.get("target_module", "")
         if not target:
-            print(f"[orchestrator] {pid}: no target_module, skipping execution")
+            print(f"[orchestrator] {pid}: no executable target, skipping execution")
             return True  # Still counts as dispatched; needs manual target
 
         result = apply_improvement(
@@ -410,6 +410,20 @@ def _run_validation(proposal: dict) -> str | None:
     except Exception as e:
         print(f"[orchestrator] Validation error for {proposal['proposal_id']}: {e}")
         return None
+
+
+def get_router_recommendations(limit: int = 10) -> list[dict]:
+    """Return read-only controlled-loop routing recommendations."""
+    try:
+        from proposal_lifecycle_manager import list_proposals
+        from controlled_loop_router import ACTIVE_STATUSES, route_many
+    except Exception:
+        return []
+
+    proposals = []
+    for status in sorted(ACTIVE_STATUSES):
+        proposals.extend(list_proposals(status=status, limit=limit))
+    return route_many(proposals[:limit])
 
 
 # ============ Heartbeat ============
@@ -489,14 +503,60 @@ def heartbeat() -> dict:
     except Exception as e:
         actions.append(f"Advancement error: {e}")
 
-    # 5. Scan external learning
+    # 5. Ingest fresh external-learning evidence from gather.py JSONL → X-Memory → proposals.
     try:
+        from proposal_bridge import process_learning_items
+        import json as _json
+        from pathlib import Path as _Path
+        from datetime import date as _date
+        
+        # Read today's JSONL files from gather.py output
+        today = _date.today().isoformat()
+        learning_dir = _Path(__file__).resolve().parent.parent.parent / "memory" / "learning"
+        fresh_items = []
+        quality_filtered = 0
+        for jl in sorted(learning_dir.glob(f"candidates-*-{today}.jsonl")):
+            for line in jl.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    item = _json.loads(line)
+                    if isinstance(item, dict):
+                        score = float(item.get("final_score", item.get("score", 0)))
+                        if score < 3.0:  # Noise gate: very low-scored items
+                            quality_filtered += 1
+                            continue
+                        item.setdefault("source", jl.stem.replace("candidates-", "").replace(f"-{today}", ""))
+                        item.setdefault("final_score", score)
+                        fresh_items.append(item)
+                except (_json.JSONDecodeError, ValueError):
+                    pass
+        
+        # Deep-read tier: only high-scored (≥8) items become proposal candidates
+        bridge_items = [it for it in fresh_items if float(it.get("final_score", 0)) >= 8.0]
+        low_score_count = len(fresh_items) - len(bridge_items)
+        
+        if bridge_items:
+            bridge_result = process_learning_items(bridge_items)
+            actions.append(
+                f"Ingested {len(fresh_items)} items (≥8: {len(bridge_items)}, noise: {quality_filtered}, low: {low_score_count}) → "
+                f"{bridge_result.get('evidence_recorded', 0)} evidence, "
+                f"{bridge_result.get('proposals_created', 0)} proposals, "
+                f"{bridge_result.get('evidence_attached', 0)} attached"
+            )
+        elif fresh_items:
+            actions.append(f"Scanned {len(fresh_items)} items, 0 met deep-read threshold (≥8)")
+        
+        # Also scan existing observations for bridge output
         from proposal_bridge import scan_pending_observations
         scan = scan_pending_observations()
-        if scan["processed"] > 0:
-            actions.append(f"Processed {scan['processed']} external learning items")
+        if scan.get("processed", 0) > 0:
+            actions.append(
+                f"Pending evidence scan: {scan['processed']} items processed"
+            )
     except Exception as e:
-        actions.append(f"External learning scan error: {e}")
+        actions.append(f"External learning evidence error: {e}")
 
     # 6. Proactive capability building
     try:
@@ -520,10 +580,72 @@ def heartbeat() -> dict:
     except Exception as e:
         actions.append(f"Goal update error: {e}")
 
+    # 7.1 Auto-record system activity to feed causal_validator and capability_model
+    try:
+        from task_outcome_hook import auto_record_system_activity
+        ar = auto_record_system_activity()
+        if ar.get("recorded", 0) > 0:
+            actions.append(f"Auto-recorded {ar['recorded']} system outcomes")
+    except Exception:
+        pass
+
+    # 7.2 Ingest goal gaps as signals for routing
+    try:
+        from goal_tree import get_gaps
+        goal_gaps = get_gaps()
+        for g in goal_gaps[:5]:
+            ingest_signal(
+                signal_type="goal_gap",
+                source_id=str(g.get("goal_id", "")),
+                task_type="goal_tracking",
+                severity=g.get("gap", 0.5),
+            )
+        if goal_gaps:
+            actions.append(f"Ingested {len(goal_gaps)} goal-gap signals")
+    except Exception:
+        pass
+
+    # 8. Read-only controlled-loop routing recommendations
+    router_recommendations = []
+    try:
+        router_recommendations = get_router_recommendations(limit=5)
+        if router_recommendations:
+            actions.append(f"Router recommendations: {len(router_recommendations)}")
+            for r in router_recommendations[:3]:
+                actions.append(
+                    f"  → {r['proposal_id']}: {r['next_action']} "
+                    f"via {r['expert']} (risk={r['risk_level']})"
+                )
+    except Exception as e:
+        actions.append(f"Router recommendation error: {e}")
+
+    # 9. Periodic cleanup: stale temp files, old backups, DB maintenance
+    try:
+        from pathlib import Path as _Path
+        now = datetime.now()
+        tmp_dir = _Path('/tmp/openclaw')
+        if tmp_dir.exists():
+            cleaned = sum(1 for f in tmp_dir.rglob('*') if f.is_file() and (now - datetime.fromtimestamp(f.stat().st_mtime)).days > 7 and (f.unlink(missing_ok=True) or True))
+            if cleaned > 0:
+                actions.append(f"Cleaned {cleaned} stale /tmp files")
+        backup_dir = WORKSPACE / 'memory' / 'evolution_backups'
+        if backup_dir.exists():
+            backups = sorted(backup_dir.glob('*.py'), key=lambda p: p.stat().st_mtime, reverse=True)
+            for old in backups[10:]:
+                if (now - datetime.fromtimestamp(old.stat().st_mtime)).days > 14:
+                    old.unlink(missing_ok=True)
+        if now.weekday() == 6:
+            db = get_db()
+            db.execute('PRAGMA optimize')
+            db.close()
+    except Exception:
+        pass
+
     summary = {
         "timestamp": timestamp,
         "actions": actions,
         "action_count": len(actions),
+        "router_recommendations": router_recommendations,
     }
 
     if actions:
@@ -550,6 +672,9 @@ def create_capability_experiment(
     the system detects it LACKS a capability entirely — not that it's failing,
     but that it can't even attempt certain tasks.
 
+    Deduplication: if an active (non-terminal) proposal exists for the same
+    capability, skip creating a duplicate.
+
     Args:
         capability_name: What capability to build (e.g., "pdf_processing", "image_analysis")
         description: What the capability should do
@@ -560,7 +685,20 @@ def create_capability_experiment(
         {"success": bool, "proposal_id": str, "message": str}
     """
     try:
-        from proposal_lifecycle_manager import create_proposal
+        from proposal_lifecycle_manager import create_proposal, list_proposals
+
+        # === Deduplication: skip if active proposal already exists ===
+        ACTIVE_STATUSES = ("draft", "pending_review", "approved", "experimenting", "validated")
+        existing = list_proposals(limit=50)
+        for p in existing:
+            if (p.get("category") == "capability_building"
+                    and p.get("target_scope", "") == capability_name
+                    and p.get("status") in ACTIVE_STATUSES):
+                return {
+                    "success": False,
+                    "proposal_id": p["proposal_id"],
+                    "message": f"Active proposal {p['proposal_id']} already exists for {capability_name}",
+                }
 
         proposal_id = f"cap_{capability_name}_{datetime.now().strftime('%m%d%H%M')}"
         result = create_proposal(

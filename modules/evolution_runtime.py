@@ -8,8 +8,7 @@ Evolution Runtime — 统一进化运行时。
 
 注意（2026-04-14 架构收口）：
 - Proposal 状态机已统一到 proposal_lifecycle_manager.py（唯一真源）
-- 本模块不再管理 lifecycle_status 或 evolution_changes 表
-- evolution_changes 表保留但标记为 LEGACY READ-ONLY
+- 本模块不再管理 proposal 状态或 legacy evolution_changes 写入
 - 所有 proposal 状态操作委托给 proposal_lifecycle_manager
 
 事件类型：
@@ -23,20 +22,12 @@ from __future__ import annotations
 import json
 import sys
 from datetime import datetime
-from pathlib import Path
 
-_modules = Path(__file__).parent
-_workspace = _modules.parent
-for p in [str(_workspace), str(_modules)]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
+from bootstrap import ensure_workspace_on_path, ensure_xmemory_on_path, module_dir, module_workspace
 
-try:
-    from runtime_config import XMEMORY_PATH
-    if str(XMEMORY_PATH) not in sys.path:
-        sys.path.insert(0, str(XMEMORY_PATH))
-except ImportError:
-    pass
+_workspace = ensure_workspace_on_path()
+_modules = module_dir()
+ensure_xmemory_on_path()
 
 from db_common import get_db
 
@@ -167,14 +158,30 @@ def get_stale_changes(hours: int = 48) -> list[dict]:
 
 
 # ============ Heartbeat Entry Point ============
+# NOTE (2026-04-27): heartbeat_check is a legacy entry that partially duplicates
+# evolution_orchestrator.heartbeat(). New callers should use the orchestrator
+# which has full signal routing, bridge ingestion, and goal updates.
+# This function is kept for backward CLI compatibility only.
 
 def heartbeat_check() -> dict:
-    """Run periodic evolution health checks. Called from HEARTBEAT.md.
-
-    Returns summary of actions taken.
+    """Run periodic evolution health checks. DEPRECATED for new callers.
+    
+    Use evolution_orchestrator.heartbeat() instead — it includes:
+    - Capability detection + signal routing
+    - External learning bridge ingestion from gather.py JSONL
+    - Auto goal progress updates
+    - Task outcome auto-recording
+    - Controlled-loop router recommendations
     """
     _ensure_schema()
     actions = []
+
+    # Redirect to orchestrator for comprehensive check
+    try:
+        from evolution_orchestrator import heartbeat as orch_heartbeat
+        return orch_heartbeat()
+    except Exception as e:
+        actions.append(f"Orchestrator redirect failed: {e}")
 
     # 1. Check for stale proposals
     stale = get_stale_changes(hours=48)
@@ -205,13 +212,16 @@ def heartbeat_check() -> dict:
     except Exception as e:
         actions.append(f"Validation error: {e}")
 
-    # 3. Scan for new proposals from external learning
+    # 3. Route curated external-learning evidence into proposal candidates.
     try:
         from proposal_bridge import scan_pending_observations
         scan_result = scan_pending_observations()
         if scan_result["processed"] > 0:
-            actions.append(f"Processed {scan_result['processed']} learning items "
-                         f"(P0={scan_result['p0_proposals']}, P1={scan_result['p1_candidates']})")
+            actions.append(
+                f"Processed {scan_result['processed']} learning evidence items "
+                f"(proposals={scan_result.get('proposals_created', 0)}, "
+                f"attached={scan_result.get('evidence_attached', 0)})"
+            )
     except Exception as e:
         actions.append(f"Proposal scan error: {e}")
 

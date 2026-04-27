@@ -6,7 +6,7 @@ Learning Conversion Tracker — 学习转化追踪器。
 - 追踪外部学习内容是否转化为实际进化变更
 - 对比 observations（学习记录）和 proposals（提案记录）
 - 计算学习转化率
-- Legacy: 也读 evolution_changes 作为兼容（只读）
+
 """
 from __future__ import annotations
 
@@ -17,21 +17,11 @@ import argparse
 from datetime import datetime, timedelta
 from pathlib import Path
 
-_modules_path = Path(__file__).parent
-_workspace_path = _modules_path.parent
-for p in [_modules_path]:
-    if str(p) not in sys.path:
-        sys.path.insert(0, str(p))
-try:
-    if str(_workspace_path) not in sys.path:
-        sys.path.insert(0, str(_workspace_path))
-    from runtime_config import XMEMORY_PATH
-    if str(XMEMORY_PATH) not in sys.path:
-        sys.path.insert(0, str(XMEMORY_PATH))
-except ImportError:
-    _xmemory_path = _workspace_path / "X记忆"
-    if _xmemory_path.exists() and str(_xmemory_path) not in sys.path:
-        sys.path.insert(0, str(_xmemory_path))
+from bootstrap import ensure_workspace_on_path, ensure_xmemory_on_path, module_dir
+
+_modules_path = module_dir()
+_workspace_path = ensure_workspace_on_path()
+ensure_xmemory_on_path()
 
 from db_common import get_db
 
@@ -52,8 +42,8 @@ def get_learning_items(days: int = 30) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def _get_evolution_changes(days: int = 30) -> list[dict]:
-    """获取最近 N 天的进化变更记录。只读 proposals 表（唯一数据源）。"""
+def _get_proposal_changes(days: int = 30) -> list[dict]:
+    """Get recent proposal changes from proposals table (not legacy evolution_changes)."""
     db = get_db()
     cutoff = (datetime.now() - timedelta(days=days)).isoformat()
 
@@ -112,7 +102,7 @@ def track_conversion(days: int = 30) -> dict:
         包含转化统计的字典
     """
     learning_items = get_learning_items(days)
-    changes = _get_evolution_changes(days)
+    changes = _get_proposal_changes(days)
 
     converted_items = 0
     matched_details = []
