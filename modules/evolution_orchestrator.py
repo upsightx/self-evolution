@@ -545,6 +545,16 @@ def heartbeat() -> dict:
                 f"{bridge_result.get('proposals_created', 0)} proposals, "
                 f"{bridge_result.get('evidence_attached', 0)} attached"
             )
+            # 推送深读候选给主人
+            top_candidates = sorted(bridge_items, key=lambda x: float(x.get("final_score", 0)), reverse=True)[:5]
+            if top_candidates:
+                lines = ["📚 今日深读候选（≥8 分）："]
+                for i, c in enumerate(top_candidates, 1):
+                    title = str(c.get("title", "?"))[:80]
+                    url = str(c.get("url", ""))
+                    score = float(c.get("final_score", 0))
+                    lines.append(f"{i}. [{score:.1f}] {title}\n   {url}")
+                actions.append("\n".join(lines))
         elif fresh_items:
             actions.append(f"Scanned {len(fresh_items)} items, 0 met deep-read threshold (≥8)")
         
